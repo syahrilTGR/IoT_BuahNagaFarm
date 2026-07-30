@@ -6,13 +6,19 @@ Prototipe IoT untuk monitoring & kontrol pencahayaan budidaya buah naga dengan m
 
 ```
 kontrol-lampu-buah-naga/
-├── docs/                    # Dokumentasi & proposal
-│   ├── Proposal.md
-│   └── Proposal.pdf
+├── docs/                    # Dokumentasi & plan
+│   ├── block-diagram.md
+│   └── plan.md
 ├── src/                     # ESP32 code (PlatformIO)
+│   ├── main.cpp             # Production firmware (PZEM + SSR + WiFiManager + WiFi)
+│   ├── test_platform.cpp    # Minimal test firmware (LED + button + Firebase RTDB)
+│   └── config.h.example     # Template credential config (copy to config.h, gitignored)
 ├── firebase/                # Firebase config (rules, indexes, schema)
+│   └── rtdb-sample.json
 ├── smartnaga_app/           # Mobile app (Flutter)
-├── hardware/                # KiCad schematics & PCB
+├── hardware/                # Hardware design (Fritzing, EasyEDA)
+│   ├── components.md
+│   └── skema rangkaian.fzz
 └── images/                  # Diagram, foto prototype
 ```
 
@@ -27,7 +33,7 @@ kontrol-lampu-buah-naga/
 | Manajemen Koneksi | ESP32 WiFi Manager (OTM - On The Fly Configuration) |
 | Backend | Firebase Realtime Database (real-time) + Firestore (historical logs) |
 | Mobile App | Flutter (recommended) / React Native |
-| Hardware Design | KiCad |
+| Hardware Design | Fritzing (prototyping), EasyEDA (PCB production) |
 
 ##Rencana Fitur tambahan
 - Data historis otomatis dipindahkan dari RTDB ke **Firestore** menggunakan Firebase Cloud Function
@@ -49,10 +55,10 @@ flutter pub get
 flutter run
 ```
 
-### Hardware (KiCad)
-Open `hardware/kontrol-lampu.kicad_pro` di KiCad 8+
+### Hardware (Fritzing / EasyEDA)
+Open `hardware/skema rangkaian.fzz` di Fritzing untuk prototyping, atau import ke EasyEDA untuk PCB production.
 
-## Roadmap (dari Proposal)
+## Roadmap
 
 | Tahun | Fokus |
 |-------|-------|
