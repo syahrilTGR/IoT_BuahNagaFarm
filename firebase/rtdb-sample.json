@@ -1,0 +1,28 @@
+{
+  "energy": {
+    "block_a": {
+      "voltage": 220.5,
+      "current": 0.12,
+      "power": 9.8,
+      "energy": 12.5,
+      "timestamp": 1753286400000
+    },
+    "block_b": {
+      "voltage": 220.3,
+      "current": 0.11,
+      "power": 9.9,
+      "energy": 11.8,
+      "timestamp": 1753286400000
+    }
+  },
+  "lamp": {
+    "status": {
+      "a": true,
+      "b": true
+    },
+    "control": {
+      "a": true,
+      "b": false
+    }
+  }
+}
