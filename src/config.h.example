@@ -1,0 +1,24 @@
+/*
+ * Firebase & WiFi Credentials
+ *
+ * Copy this file to config.h and fill in your values.
+ * config.h is in .gitignore - DO NOT commit it to Git.
+ */
+
+#ifndef CONFIG_H
+#define CONFIG_H
+
+// ── WiFi (opsional - WiFiManager akan muncul jika tidak bisa connect) ────────
+// #define WIFI_SSID       "your-wifi-ssid"
+// #define WIFI_PASSWORD   "your-wifi-password"
+
+// ── Firebase (dari Firebase Console) ──────────────────────────────────────────
+#define FIREBASE_API_KEY         "YOUR_API_KEY"
+#define FIREBASE_PROJECT_ID      "your-project-id"
+#define FIREBASE_DATABASE_URL    "https://your-project-id-default-rtdb.firebaseio.com/"
+
+// ── Firebase Auth (dari Firebase Console → Authentication) ────────────────────
+#define FIREBASE_USER_EMAIL      "your-email@example.com"
+#define FIREBASE_USER_PASSWORD   "your-password"
+
+#endif // CONFIG_H
