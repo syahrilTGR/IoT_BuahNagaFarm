@@ -63,9 +63,8 @@ void setup() {
   pinMode(SSR_PIN_B, OUTPUT);
   digitalWrite(SSR_PIN_B, LOW);
 
-  // Serial2 for PZEM (RX2=16, TX2=17)
-  Serial2.begin(9600, SERIAL_8N1, PZEM_RX, PZEM_TX);
-  delay(100);
+  // Serial2 sudah di-init otomatis oleh PZEM004Tv30 constructor
+  // Tidak perlu Serial2.begin() lagi di sini
 
   // WiFi Manager (auto-connect atau AP config portal)
   setupWiFi();
