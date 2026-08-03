@@ -101,9 +101,47 @@ logs/{logId}/entries/{entryId}
 - Optimistic UI: update lokal → confirm remote
 - Auto-reconnect Firebase (exponential backoff)
 
-### 4.3 Monitoring Energi (Opsional MVP)
+### 4.3 Monitoring Energi
 - Card ringkasan: Voltage, Current, Power, Energy per blok
 - Grafik konsumsi harian/mingguan (Flutter charts)
+
+### 4.4 Anomali Daya (Power Anomaly Detection)
+**Tujuan:** Deteksi otomatis jika terjadi gangguan pada instalasi lampu — lampu mati/rusak, kabel putus, atau short circuit.
+
+**Cara kerja:**
+1. User mengkonfigurasi **expected power** per blok saat setup:
+   - Blok A: 10 lampu × 5W = **50W expected**
+   - Blok B: 8 lampu × 5W = **40W expected**
+2. App menyimpan config di Firestore: `/device/{deviceId}/config/`
+3. ESP32 mengirim reading ke RTDB `/energy/{a,b}` setiap 5 detik
+4. App (atau Cloud Function) membandingkan actual vs expected
+5. Jika deviasi > threshold → trigger notifikasi
+
+**Tipe anomali:**
+
+| Kondensi | Daya Tercatat | Interpretasi | Alert |
+|----------|--------------|--------------|-------|
+| Lampu HIDUP tapi daya ≈ 0W | Actual << Expected | Lampu mati/rusak, kabel putus, atau SSR relay macet | 🔴 CRITICAL |
+| Lampu HIDUP tapi daya rendah (50-80% expected) | Actual < Expected | Sebagian lampu mati/rusak | 🟡 WARNING |
+| Lampu HIDUP tapi daya melebihi expected (>120%) | Actual > Expected | Short circuit, beban berlebih, atau additional load | 🔴 CRITICAL |
+| Lampu MATI tapi daya > 0W | Actual > 0 saat OFF | Kebocoran arus, relay macet, atau ada beban lain | 🟡 WARNING |
+| Voltage terlalu rendah (< 190V) | — | Suplai listrik tidak stabil | 🟡 WARNING |
+| Voltage terlalu tinggi (> 250V) | — | Suplai listrik tidak stabil, risiko perangkat | 🔴 CRITICAL |
+
+**Threshold default (konfigurable):**
+
+| Parameter | Default | Toleransi |
+|-----------|---------|-----------|
+| Power tolerance | ±20% dari expected | Configurable per blok |
+| Voltage min | 190V | Hard limit |
+| Voltage max | 250V | Hard limit |
+| Minimum detectable power | 5W | Untuk filter noise |
+| Debounce time | 30 detik | Hindari false alert saat transisi ON/OFF |
+
+**Notifikasi:**
+- In-app banner/card alert (persistent sampai anomali hilang)
+- Push notification via FCM (untuk anomali CRITICAL)
+- Log anomali ke Firestore untuk audit trail
 
 ### 4.4 Settings & Device Management
 - Device info: firmware version, IP, RSSI
@@ -135,11 +173,10 @@ logs/{logId}/entries/{entryId}
 ## 6. User Flow
 
 ### Onboarding (First Time)
-1. Buka app → "Tambah Perangkat"
-2. Scan QR Code di device ESP32 (berisi device_id + WiFi config URL)
-3. Join hotspot ESP32 (SSID: `ESP32_Setup_XXXXXXXX`)
-4. Masukkan kredensial WiFi rumah → ESP32 connect ke Firebase
-5. App verify device online → tampilkan dashboard
+1. Nyalakan ESP32 → otomatis broadcast hotspot (SSID: `ESP32_Setup_XXXXXXXX`)
+2. Join hotspot ESP32 dari HP
+3. Masukkan kredensial WiFi rumah → ESP32 connect ke Firebase
+4. Buka app → auto-detect device online → tampilkan dashboard
 
 ### Daily Operation
 1. Buka app → auto-connect Firebase (cached auth)
