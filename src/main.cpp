@@ -2,7 +2,8 @@
 #include <PZEM004Tv30.h>
 #include <WiFi.h>
 #include <WiFiManager.h>  // ESP32 WiFi Manager
-// #include "config.h"     // Uncomment saat Firebase di-integrasikan ke production
+#include <Firebase_ESP_Client.h>
+#include "config.h"
 
 // ── Pin Definition ───────────────────────────────────────────────────────────
 static const uint8_t SSR_PIN = 13;          // D13 → LLC → SSR (Blok A)
@@ -41,12 +42,19 @@ struct EnergyData {
 EnergyData blockA;
 bool lampAState = false;
 bool wifiConnected = false;
+bool firebaseReady = false;  // Firebase connection status
+
+// ── Firebase objects ──────────────────────────────────────────────────────────────
+FirebaseData fbdo;
+FirebaseAuth auth;
+FirebaseConfig config;
 
 // ── WiFiManager Instance ─────────────────────────────────────────────────────
 WiFiManager wm;
 
 // ── Forward Declarations ─────────────────────────────────────────────────────
 void setupWiFi();
+void setupFirebase();
 void readPZEM();
 void controlSSR();
 void setLampA(bool state);
@@ -78,6 +86,7 @@ void setup() {
 
   // WiFi Manager (auto-connect atau AP config portal)
   setupWiFi();
+  setupFirebase();
 
   Serial.println("=== Setup Selesai ===\n");
 }
@@ -161,6 +170,30 @@ void setupWiFi() {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
+// Firebase Setup
+// ════════════════════════════════════════════════════════════════════════════
+void setupFirebase() {
+  config.api_key = FIREBASE_API_KEY;
+  config.database_url = FIREBASE_DATABASE_URL;
+
+  auth.user.email = FIREBASE_USER_EMAIL;
+  auth.user.password = FIREBASE_USER_PASSWORD;
+
+  Firebase.begin(&config, &auth);
+  Firebase.reconnectWiFi(true);
+
+  delay(2000);
+
+  if (WiFi.status() == WL_CONNECTED && Firebase.ready()) {
+    firebaseReady = true;
+    Serial.println("[Firebase] Connected & Authenticated");
+  } else {
+    firebaseReady = false;
+    Serial.println("[Firebase] FAILED! Check credentials.");
+  }
+}
+
+// ════════════════════════════════════════════════════════════════════════════
 // PZEM Reading
 // ════════════════════════════════════════════════════════════════════════════
 void readPZEM() {
@@ -221,31 +254,38 @@ void updateOLED() {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-// Firebase Integration (placeholder - implement nanti)
+// Firebase Integration
 // ════════════════════════════════════════════════════════════════════════════
 void checkFirebaseCommands() {
-  // TODO: Implement Firebase RTDB listener
-  // Path yang didengarkan:
-  // - /lamp/control/a  (boolean)
-  // - /lamp/control/b  (boolean)
+  if (!wifiConnected || !firebaseReady) return;
 
-  // Contoh logic nanti:
-  // if (firebaseData.changed("/lamp/control/a")) {
-  //   bool cmd = firebaseData.boolData("/lamp/control/a");
-  //   setLampA(cmd);
-  // }
+  // Baca /lamp/control/a (boolean)
+  if (Firebase.RTDB.getBool(&fbdo, "/lamp/control/a")) {
+    bool cmd = fbdo.boolData();
+    if (cmd != lampAState) {
+      setLampA(cmd);
+      Serial.println("[Firebase] Command executed.");
+    }
+  }
 }
 
 void sendToFirebase() {
-  if (!wifiConnected) return;
+  if (!wifiConnected || !firebaseReady) return;
 
-  // TODO: Implement Firebase RTDB push
-  // Path:
-  // - /energy/block_a  {voltage, current, power, energy, timestamp}
-  // - /lamp/status/a   {state: true/false, timestamp}
+  // 1. Kirim energy data ke /energy/block_a
+  FirebaseJson energyJson;
+  energyJson.set("voltage", blockA.voltage);
+  energyJson.set("current", blockA.current);
+  energyJson.set("power", blockA.power);
+  energyJson.set("energy", blockA.energy);
+  energyJson.set("timestamp", millis() / 1000);
+  Firebase.RTDB.setJSON(&fbdo, "/energy/block_a", &energyJson);
 
-  // Serial debug untuk sekarang
-  Serial.println("[Firebase] Data siap kirim (placeholder)");
+  // 2. Kirim status lampu ke /lamp/status/a
+  FirebaseJson statusJson;
+  statusJson.set("state", lampAState);
+  statusJson.set("timestamp", millis() / 1000);
+  Firebase.RTDB.setJSON(&fbdo, "/lamp/status/a", &statusJson);
 }
 
 // ════════════════════════════════════════════════════════════════════════════
