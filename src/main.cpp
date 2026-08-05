@@ -7,11 +7,13 @@
 // ── Pin Definition ───────────────────────────────────────────────────────────
 static const uint8_t SSR_PIN = 13;          // D13 → LLC → SSR (Blok A)
 static const uint8_t SSR_PIN_B = 12;        // D12 → LLC → SSR (Blok B) - future
-static const uint8_t PZEM_RX = 16;          // RX2 (GPIO16) ← PZEM TX
-static const uint8_t PZEM_TX = 17;          // TX2 (GPIO17) → PZEM RX
+static const uint8_t PZEM_RX = 33;          // ESP32 RX2 ← PZEM TX
+static const uint8_t PZEM_TX = 32;          // ESP32 TX2 → PZEM RX
+static const uint8_t TEST_BTN_PIN = 4;      // GPIO4 - tombol toggle lampu (INPUT_PULLUP)
 
 // ── PZEM Objects ─────────────────────────────────────────────────────────────
-PZEM004Tv30 pzemA(Serial2, PZEM_RX, PZEM_TX);  // Blok A
+// PZEM004Tv30 constructor akan panggil Serial2.begin() otomatis
+PZEM004Tv30 pzemA(Serial2, PZEM_RX, PZEM_TX);  // Blok A, addr default 0xF8
 // PZEM004Tv30 pzemB(Serial1, ...);             // Blok B - future
 
 // ── Timers (non-blocking via millis) ─────────────────────────────────────────
@@ -47,6 +49,7 @@ WiFiManager wm;
 void setupWiFi();
 void readPZEM();
 void controlSSR();
+void setLampA(bool state);
 void updateOLED();
 void checkFirebaseCommands();
 void sendToFirebase();
@@ -63,8 +66,15 @@ void setup() {
   pinMode(SSR_PIN_B, OUTPUT);
   digitalWrite(SSR_PIN_B, LOW);
 
+  // Tombol toggle lampu (INPUT_PULLUP, tombol ke GND)
+  pinMode(TEST_BTN_PIN, INPUT_PULLUP);
+
+  // LED builtin sebagai indikator (active LOW)
+  pinMode(2, OUTPUT);
+  digitalWrite(2, HIGH);
+
   // Serial2 sudah di-init otomatis oleh PZEM004Tv30 constructor
-  // Tidak perlu Serial2.begin() lagi di sini
+  // delay(200);  // beri waktu UART stabil
 
   // WiFi Manager (auto-connect atau AP config portal)
   setupWiFi();
@@ -74,6 +84,22 @@ void setup() {
 
 void loop() {
   unsigned long now = millis();
+
+  // Read physical button (GPIO4 with pullup - LOW when pressed)
+  // Debounce: ignore multiple triggers dalam 200ms
+  static unsigned long lastBtnTime = 0;
+  static bool lastBtnState = HIGH;
+  const unsigned long debounceMs = 200;  // 200ms debounce interval
+
+  bool btnState = digitalRead(TEST_BTN_PIN);
+  if (btnState != lastBtnState) {
+    if (btnState == LOW && (now - lastBtnTime >= debounceMs)) {  // Tombol ditekan (disambungkan ke GND)
+      lastBtnTime = now;
+      setLampA(!lampAState);  // Toggle lampu
+      Serial.println("[BTN] Physical button pressed - toggling lamp");
+    }
+    lastBtnState = btnState;
+  }
 
   // 1. Baca PZEM tiap 5 detik
   if (now - timerPZEM.prev >= timerPZEM.interval) {
@@ -138,12 +164,20 @@ void setupWiFi() {
 // PZEM Reading
 // ════════════════════════════════════════════════════════════════════════════
 void readPZEM() {
+  // Cek alamat PZEM (debug)
+  static bool addrPrinted = false;
+  if (!addrPrinted) {
+    uint8_t addr = pzemA.readAddress();
+    Serial.printf("[PZEM] Address: 0x%02X\n", addr);
+    addrPrinted = true;
+  }
+
   blockA.voltage = pzemA.voltage();
   blockA.current = pzemA.current();
   blockA.power   = pzemA.power();
   blockA.energy  = pzemA.energy();
 
-  // Validasi pembacaan
+  // Validasi per-field (seperti contoh mandulaj)
   blockA.valid = !isnan(blockA.voltage) && !isnan(blockA.current);
 
   if (blockA.valid) {
@@ -164,6 +198,8 @@ void printEnergyData(const EnergyData& d, const char* label) {
 void controlSSR() {
   // Active HIGH: HIGH = ON, LOW = OFF
   digitalWrite(SSR_PIN, lampAState ? HIGH : LOW);
+  // LED builtin sebagai indikator (active LOW: ON = LOW)
+  digitalWrite(2, lampAState ? LOW : HIGH);
 }
 
 void setLampA(bool state) {
