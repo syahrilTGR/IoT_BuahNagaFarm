@@ -1,7 +1,6 @@
 pelajari:
 - millis()
 - rangkaian pzem ke esp32
-- 
 
 note:
 - yg ke SSR itu yg line phase
@@ -12,3 +11,23 @@ note:
 di App
 - tambah estimasi rup
 - coba ekspor historis dari firestore ke spreadsheet/csv
+
+---
+
+## Firmware
+- [x] PZEM B baca data
+- [x] SSR B pin dipindah ke GPIO27
+- [x] Timestamp pakai NTP epoch seconds
+- [x] Firmware hanya tulis `/energy/block_{a,b}`, app handle `/lamp/status/{a,b}`
+- [x] Debounce Firebase command (2s) cegah flicker saat SSL reconnect
+- [x] Boot: semua lamp OFF, baca status dari RTDB setelah connect
+- [ ] Lamp B bisa dikontrol dari app (sudah di code, perlu test)
+
+## App (SmartNaga)
+- [ ] Align timestamp: firmware pakai epoch seconds → app parse `DateTime.fromMillisecondsSinceEpoch(timestamp * 1000)`
+- [ ] `getEnergyStream()` hanya baca `/energy/block_a` → tambah stream `/energy/block_b`
+- [ ] `home_bloc.dart`: tambah `energyB` + `lampBOn` ke state (sudah ada lampBOn, perlu energyB)
+- [ ] `home_screen.dart`: tambah metrics grid Blok B + lamp toggle Blok B
+- [ ] `control_screen.dart`: sudah OK (both blocks)
+- [ ] `historical_screen.dart`: tambah filter chip (Harian, Mingguan, Bulanan, Tahunan)
+- [ ] `settings_screen.dart`: align dengan design

@@ -5,17 +5,22 @@
 #include <Firebase_ESP_Client.h>
 #include "config.h"
 
+// NTP time sync
+#include "time.h"
+
 // ── Pin Definition ───────────────────────────────────────────────────────────
 static const uint8_t SSR_PIN = 13;          // D13 → LLC → SSR (Blok A)
-static const uint8_t SSR_PIN_B = 12;        // D12 → LLC → SSR (Blok B) - future
+static const uint8_t SSR_PIN_B = 27;        // GPIO27 → SSR (Blok B)
 static const uint8_t PZEM_RX = 33;          // ESP32 RX2 ← PZEM TX
 static const uint8_t PZEM_TX = 32;          // ESP32 TX2 → PZEM RX
+static const uint8_t PZEMB_RX = 25;         // I2C SDA
+static const uint8_t PZEMB_TX = 26;         // I2C SCL
 static const uint8_t TEST_BTN_PIN = 4;      // GPIO4 - tombol toggle lampu (INPUT_PULLUP)
 
 // ── PZEM Objects ─────────────────────────────────────────────────────────────
 // PZEM004Tv30 constructor akan panggil Serial2.begin() otomatis
 PZEM004Tv30 pzemA(Serial2, PZEM_RX, PZEM_TX);  // Blok A, addr default 0xF8
-// PZEM004Tv30 pzemB(Serial1, ...);             // Blok B - future
+PZEM004Tv30 pzemB(Serial1, PZEMB_RX, PZEMB_TX); // Blok B, addr default 0xF9
 
 // ── Timers (non-blocking via millis) ─────────────────────────────────────────
 struct Timer {
@@ -40,9 +45,15 @@ struct EnergyData {
 };
 
 EnergyData blockA;
+EnergyData blockB;
 bool lampAState = false;
+bool lampBState = false;
 bool wifiConnected = false;
 bool firebaseReady = false;  // Firebase connection status
+
+// Debounce: ignore Firebase commands within 2s after last execution
+unsigned long lastCmdExecTime = 0;
+const unsigned long CMD_DEBOUNCE_MS = 2000;
 
 // ── Firebase objects ──────────────────────────────────────────────────────────────
 FirebaseData fbdo;
@@ -57,7 +68,9 @@ void setupWiFi();
 void setupFirebase();
 void readPZEM();
 void controlSSR();
+void controlSSRB();
 void setLampA(bool state);
+void setLampB(bool state);
 void updateOLED();
 void checkFirebaseCommands();
 void sendToFirebase();
@@ -154,7 +167,7 @@ void setupWiFi() {
   wm.setConnectTimeout(30);        // 30 detik timeout connect
 
   // Custom AP name
-  String apName = "SmartNaga-" + String((uint32_t)ESP.getEfuseMac(), HEX);
+  String apName = String("SmartNaga-") + String((uint32_t)ESP.getEfuseMac(), HEX);
 
   bool res = wm.autoConnect(apName.c_str());
 
@@ -167,6 +180,23 @@ void setupWiFi() {
   wifiConnected = true;
   Serial.print("WiFi Connected! IP: ");
   Serial.println(WiFi.localIP());
+
+  // Sync waktu via NTP
+  configTime(7 * 3600, 0, "pool.ntp.org", "time.nist.gov");
+  Serial.println("[NTP] Waiting for time sync...");
+  time_t now = time(nullptr);
+  while (now < 1000000000) {
+    delay(500);
+    now = time(nullptr);
+  }
+  Serial.printf("[NTP] Time synced: %s", ctime(&now));
+}
+
+// Helper: get epoch seconds (fallback millis()/1000 if NTP not ready)
+unsigned long getEpochSec() {
+  time_t t = time(nullptr);
+  if (t > 1000000000) return (unsigned long)t;
+  return millis() / 1000;
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -187,6 +217,25 @@ void setupFirebase() {
   if (WiFi.status() == WL_CONNECTED && Firebase.ready()) {
     firebaseReady = true;
     Serial.println("[Firebase] Connected & Authenticated");
+
+    // Inisialisasi default control paths
+    Firebase.RTDB.setBool(&fbdo, "/lamp/control/a", false);
+    Firebase.RTDB.setBool(&fbdo, "/lamp/control/b", false);
+    Serial.println("[Firebase] Default control paths initialized.");
+
+    // Sync awal: baca status lampu dari RTDB
+    bool stateA = false;
+    if (Firebase.RTDB.getBool(&fbdo, "/lamp/control/a")) {
+      stateA = fbdo.boolData();
+    }
+    setLampA(stateA);
+
+    bool stateB = false;
+    if (Firebase.RTDB.getBool(&fbdo, "/lamp/control/b")) {
+      stateB = fbdo.boolData();
+    }
+    setLampB(stateB);
+    Serial.println("[Firebase] Initial lamp state synced from RTDB.");
   } else {
     firebaseReady = false;
     Serial.println("[Firebase] FAILED! Check credentials.");
@@ -203,6 +252,31 @@ void readPZEM() {
     uint8_t addr = pzemA.readAddress();
     Serial.printf("[PZEM] Address: 0x%02X\n", addr);
     addrPrinted = true;
+  }
+
+  // Cek alamat PZEM B
+  static bool addrBPrinted = false;
+  if (!addrBPrinted) {
+    uint8_t addrB = pzemB.readAddress();
+    if (addrB == 0 || addrB == 0xFF) {
+      Serial.println("[PZEM-B] NO RESPONSE - check wiring!");
+    } else {
+      Serial.printf("[PZEM-B] Address: 0x%02X\n", addrB);
+    }
+    addrBPrinted = true;
+  }
+
+  // Baca data Blok B
+  blockB.voltage = pzemB.voltage();
+  blockB.current = pzemB.current();
+  blockB.power   = pzemB.power();
+  blockB.energy  = pzemB.energy();
+  blockB.valid = !isnan(blockB.voltage) && !isnan(blockB.current);
+
+  if (blockB.valid) {
+    printEnergyData(blockB, "Blok B");
+  } else {
+    Serial.println("[PZEM-B] No valid data");
   }
 
   blockA.voltage = pzemA.voltage();
@@ -229,16 +303,24 @@ void printEnergyData(const EnergyData& d, const char* label) {
 // SSR Control
 // ════════════════════════════════════════════════════════════════════════════
 void controlSSR() {
-  // Active HIGH: HIGH = ON, LOW = OFF
-  digitalWrite(SSR_PIN, lampAState ? HIGH : LOW);
-  // LED builtin sebagai indikator (active LOW: ON = LOW)
-  digitalWrite(2, lampAState ? LOW : HIGH);
+  // Active LOW: LOW = ON, HIGH = OFF (SSR direct dari ESP32 tanpa LLC)
+  digitalWrite(SSR_PIN, !lampAState);
+}
+
+void controlSSRB() {
+  digitalWrite(SSR_PIN_B, !lampBState);
 }
 
 void setLampA(bool state) {
   lampAState = state;
   controlSSR();
   Serial.printf("[SSR] Lampu Blok A: %s\n", state ? "ON" : "OFF");
+}
+
+void setLampB(bool state) {
+  lampBState = state;
+  controlSSRB();
+  Serial.printf("[SSR] Lampu Blok B: %s\n", state ? "ON" : "OFF");
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -259,12 +341,32 @@ void updateOLED() {
 void checkFirebaseCommands() {
   if (!wifiConnected || !firebaseReady) return;
 
+  unsigned long now = millis();
+
   // Baca /lamp/control/a (boolean)
   if (Firebase.RTDB.getBool(&fbdo, "/lamp/control/a")) {
     bool cmd = fbdo.boolData();
-    if (cmd != lampAState) {
+    if (cmd != lampAState && (now - lastCmdExecTime >= CMD_DEBOUNCE_MS)) {
       setLampA(cmd);
-      Serial.println("[Firebase] Command executed.");
+      lastCmdExecTime = now;
+      Serial.println("[Firebase] Command executed Blok A.");
+    }
+  }
+
+  // Baca /lamp/control/b (boolean)
+  if (Firebase.RTDB.getBool(&fbdo, "/lamp/control/b")) {
+    bool cmd = fbdo.boolData();
+    if (cmd != lampBState && (now - lastCmdExecTime >= CMD_DEBOUNCE_MS)) {
+      setLampB(cmd);
+      lastCmdExecTime = now;
+      Serial.println("[Firebase] Command executed Blok B.");
+    }
+  } else {
+    // Debug: tampilkan error jika path belum ada
+    static bool loggedB = false;
+    if (!loggedB && fbdo.errorReason().length() > 0) {
+      Serial.printf("[Firebase] Blok B read error: %s\n", fbdo.errorReason().c_str());
+      loggedB = true;
     }
   }
 }
@@ -272,20 +374,28 @@ void checkFirebaseCommands() {
 void sendToFirebase() {
   if (!wifiConnected || !firebaseReady) return;
 
-  // 1. Kirim energy data ke /energy/block_a
+  unsigned long ts = getEpochSec();
+
+  // Kirim energy data ke /energy/block_a
   FirebaseJson energyJson;
   energyJson.set("voltage", blockA.voltage);
   energyJson.set("current", blockA.current);
   energyJson.set("power", blockA.power);
   energyJson.set("energy", blockA.energy);
-  energyJson.set("timestamp", millis() / 1000);
+  energyJson.set("timestamp", (double)ts);
   Firebase.RTDB.setJSON(&fbdo, "/energy/block_a", &energyJson);
 
-  // 2. Kirim status lampu ke /lamp/status/a
-  FirebaseJson statusJson;
-  statusJson.set("state", lampAState);
-  statusJson.set("timestamp", millis() / 1000);
-  Firebase.RTDB.setJSON(&fbdo, "/lamp/status/a", &statusJson);
+  // Kirim energy data ke /energy/block_b
+  FirebaseJson energyJsonB;
+  energyJsonB.set("voltage", blockB.voltage);
+  energyJsonB.set("current", blockB.current);
+  energyJsonB.set("power", blockB.power);
+  energyJsonB.set("energy", blockB.energy);
+  energyJsonB.set("timestamp", (double)ts);
+  Firebase.RTDB.setJSON(&fbdo, "/energy/block_b", &energyJsonB);
+
+  // Note: /lamp/status/{a,b} ditulis oleh aplikasi (updateLampControl)
+  // Firmware hanya baca /lamp/control/{a,b} untuk eksekusi perintah
 }
 
 // ════════════════════════════════════════════════════════════════════════════
