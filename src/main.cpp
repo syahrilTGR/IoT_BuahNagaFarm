@@ -4,23 +4,43 @@
 #include <WiFiManager.h>  // ESP32 WiFi Manager
 #include <Firebase_ESP_Client.h>
 #include "config.h"
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
 
 // NTP time sync
 #include "time.h"
 
 // ── Pin Definition ───────────────────────────────────────────────────────────
-static const uint8_t SSR_PIN = 13;          // D13 → LLC → SSR (Blok A)
+static const uint8_t SSR_PIN = 13;          // D13 → SSR (Blok A)
 static const uint8_t SSR_PIN_B = 27;        // GPIO27 → SSR (Blok B)
 static const uint8_t PZEM_RX = 33;          // ESP32 RX2 ← PZEM TX
 static const uint8_t PZEM_TX = 32;          // ESP32 TX2 → PZEM RX
-static const uint8_t PZEMB_RX = 25;         // I2C SDA
-static const uint8_t PZEMB_TX = 26;         // I2C SCL
+static const uint8_t PZEMB_RX = 25;         // I2C SDA / Serial1 RX
+static const uint8_t PZEMB_TX = 26;         // I2C SCL / Serial1 TX
 static const uint8_t TEST_BTN_PIN = 4;      // GPIO4 - tombol toggle lampu (INPUT_PULLUP)
+
+// OLED I2C (default pins)
+static const uint8_t OLED_SDA = 21;
+static const uint8_t OLED_SCL = 22;
+static const uint8_t OLED_ADDR = 0x3C;
+static const uint16_t OLED_WIDTH = 128;
+static const uint16_t OLED_HEIGHT = 64;
+
+// Buzzer
+static const uint8_t BUZZER_PIN = 23;
+
+// ZMPT101B Voltage Sensor
+static const uint8_t ZMPT_PIN = 34;         // ADC1_CH6 (input only)
+static const float ZMPT_CALIBRATION = 200.0; // Kalibrasi (adjust based on module)
 
 // ── PZEM Objects ─────────────────────────────────────────────────────────────
 // PZEM004Tv30 constructor akan panggil Serial2.begin() otomatis
 PZEM004Tv30 pzemA(Serial2, PZEM_RX, PZEM_TX);  // Blok A, addr default 0xF8
 PZEM004Tv30 pzemB(Serial1, PZEMB_RX, PZEMB_TX); // Blok B, addr default 0xF9
+
+// OLED
+Adafruit_SSD1306 display(OLED_WIDTH, OLED_HEIGHT, &Wire, -1);
 
 // ── Timers (non-blocking via millis) ─────────────────────────────────────────
 struct Timer {
@@ -34,6 +54,8 @@ Timer timerPZEM      {0, 5000};   // Baca PZEM tiap 5 detik
 Timer timerFirebase  {0, 10000};  // Kirim ke Firebase tiap 10 detik
 Timer timerOLED      {0, 1000};   // Update OLED tiap 1 detik
 Timer timerCheckCmd  {0, 100};    // Cek perintah Firebase tiap 100ms
+Timer timerBuzzer    {0, 0};      // Buzzer non-blocking
+Timer timerZMPT      {0, 100};    // Baca ZMPT tiap 100ms
 
 // ── State ────────────────────────────────────────────────────────────────────
 struct EnergyData {
@@ -55,6 +77,13 @@ bool firebaseReady = false;  // Firebase connection status
 unsigned long lastCmdExecTime = 0;
 const unsigned long CMD_DEBOUNCE_MS = 2000;
 
+// Buzzer state
+bool buzzerActive = false;
+unsigned long buzzerDuration = 0;
+
+// ZMPT voltage reading
+float acVoltage = 0.0;
+
 // ── Firebase objects ──────────────────────────────────────────────────────────────
 FirebaseData fbdo;
 FirebaseAuth auth;
@@ -75,6 +104,8 @@ void updateOLED();
 void checkFirebaseCommands();
 void sendToFirebase();
 void printEnergyData(const EnergyData& d, const char* label);
+void buzzerOn(unsigned long durationMs);
+void readZMPT();
 
 void setup() {
   Serial.begin(115200);
@@ -94,14 +125,34 @@ void setup() {
   pinMode(2, OUTPUT);
   digitalWrite(2, HIGH);
 
-  // Serial2 sudah di-init otomatis oleh PZEM004Tv30 constructor
-  // delay(200);  // beri waktu UART stabil
+  // Buzzer
+  pinMode(BUZZER_PIN, OUTPUT);
+  digitalWrite(BUZZER_PIN, LOW);
 
-  // WiFi Manager (auto-connect atau AP config portal)
+  // I2C OLED — init awal, tampilkan boot screen
+  Wire.begin(OLED_SDA, OLED_SCL);
+  if (!display.begin(SSD1306_SWITCHCAPVCC, OLED_ADDR)) {
+    Serial.println("[OLED] SSD1306 allocation failed");
+  } else {
+    display.clearDisplay();
+    display.setTextSize(1);
+    display.setTextColor(WHITE);
+    display.setCursor(0, 0);
+    display.println("SmartNaga v2");
+    display.println("Booting...");
+    display.display();
+    Serial.println("[OLED] Initialized");
+  }
+
+  // Serial2 sudah di-init otomatis oleh PZEM004Tv30 constructor
+
+  // WiFi: coba autoConnect (blocking) — tapi OLED sudah tampil boot screen
+  // User bisa lihat OLED menyala walaupun WiFi sedang connect
   setupWiFi();
   setupFirebase();
 
   Serial.println("=== Setup Selesai ===\n");
+  buzzerOn(100);
 }
 
 void loop() {
@@ -150,6 +201,18 @@ void loop() {
     updateOLED();
   }
 
+  // 6. Buzzer non-blocking
+  if (buzzerActive && (now - timerBuzzer.prev >= buzzerDuration)) {
+    digitalWrite(BUZZER_PIN, LOW);
+    buzzerActive = false;
+  }
+
+  // 7. Baca ZMPT tiap 100ms
+  if (now - timerZMPT.prev >= timerZMPT.interval) {
+    timerZMPT.prev = now;
+    readZMPT();
+  }
+
   // Watchdog / keep WiFi alive
   if (WiFi.status() != WL_CONNECTED) {
     wifiConnected = false;
@@ -163,30 +226,31 @@ void loop() {
 // WiFi Manager Setup
 // ════════════════════════════════════════════════════════════════════════════
 void setupWiFi() {
-  wm.setConfigPortalTimeout(180);  // 3 menit timeout config portal
-  wm.setConnectTimeout(30);        // 30 detik timeout connect
+  wm.setConfigPortalTimeout(180);
+  wm.setConnectTimeout(30);
 
-  // Custom AP name
   String apName = String("SmartNaga-") + String((uint32_t)ESP.getEfuseMac(), HEX);
 
+  // autoConnect blocking: tapi OLED sudah menampilkan boot screen
+  // Loop OLED jalan setelah setup selesai
   bool res = wm.autoConnect(apName.c_str());
 
   if (!res) {
-    Serial.println("WiFi Connect Failed! Restarting...");
+    Serial.println("[WiFi] Gagal konek, restart...");
     delay(3000);
     ESP.restart();
   }
 
   wifiConnected = true;
-  Serial.print("WiFi Connected! IP: ");
+  Serial.print("[WiFi] Connected! IP: ");
   Serial.println(WiFi.localIP());
 
-  // Sync waktu via NTP
+  // NTP sync
   configTime(7 * 3600, 0, "pool.ntp.org", "time.nist.gov");
-  Serial.println("[NTP] Waiting for time sync...");
+  Serial.println("[NTP] Syncing time...");
   time_t now = time(nullptr);
   while (now < 1000000000) {
-    delay(500);
+    delay(100);
     now = time(nullptr);
   }
   Serial.printf("[NTP] Time synced: %s", ctime(&now));
@@ -314,12 +378,14 @@ void controlSSRB() {
 void setLampA(bool state) {
   lampAState = state;
   controlSSR();
+  buzzerOn(50);
   Serial.printf("[SSR] Lampu Blok A: %s\n", state ? "ON" : "OFF");
 }
 
 void setLampB(bool state) {
   lampBState = state;
   controlSSRB();
+  buzzerOn(50);
   Serial.printf("[SSR] Lampu Blok B: %s\n", state ? "ON" : "OFF");
 }
 
@@ -327,12 +393,43 @@ void setLampB(bool state) {
 // OLED Display (placeholder - implement nanti)
 // ════════════════════════════════════════════════════════════════════════════
 void updateOLED() {
-  // TODO: Implement OLED I2C (SSD1306) di sini
-  // Contoh nanti:
-  // display.clearDisplay();
-  // display.setCursor(0,0);
-  // display.printf("Blok A: %.1fV %.2fA", blockA.voltage, blockA.current);
-  // display.display();
+  display.clearDisplay();
+
+  // Line 1: WiFi + Power source
+  display.setTextSize(1);
+  display.setCursor(0, 0);
+  display.print(wifiConnected ? "WiFi: ON" : "WiFi: --");
+
+  const char* source = "None";
+  if (acVoltage > 180.0) source = "PLN";
+  else if (acVoltage > 150.0) source = "UPS";
+
+  display.setCursor(70, 0);
+  display.printf("Src:%s", source);
+
+  // Line 2: Waktu (NTP)
+  display.setCursor(0, 16);
+  time_t t = time(nullptr);
+  if (t > 1000000000) {
+    struct tm* tm = localtime(&t);
+    display.printf("%02d:%02d:%02d", tm->tm_hour, tm->tm_min, tm->tm_sec);
+  } else {
+    display.print("--:--:--");
+  }
+
+  // Line 3-4: Power A dan B vertikal (atas-bawah), text size 2
+  display.setTextSize(2);
+
+  float powerA = blockA.valid ? blockA.power : 0.0;
+  float powerB = blockB.valid ? blockB.power : 0.0;
+
+  display.setCursor(0, 28);
+  display.printf("A:%.0fW", powerA);
+
+  display.setCursor(0, 46);
+  display.printf("B:%.0fW", powerB);
+
+  display.display();
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -394,6 +491,12 @@ void sendToFirebase() {
   energyJsonB.set("timestamp", (double)ts);
   Firebase.RTDB.setJSON(&fbdo, "/energy/block_b", &energyJsonB);
 
+  // Kirim ZMPT voltage ke /energy/z_mpt
+  FirebaseJson zMptJson;
+  zMptJson.set("voltage", acVoltage);
+  zMptJson.set("timestamp", (double)ts);
+  Firebase.RTDB.setJSON(&fbdo, "/energy/z_mpt", &zMptJson);
+
   // Note: /lamp/status/{a,b} ditulis oleh aplikasi (updateLampControl)
   // Firmware hanya baca /lamp/control/{a,b} untuk eksekusi perintah
 }
@@ -401,7 +504,36 @@ void sendToFirebase() {
 // ════════════════════════════════════════════════════════════════════════════
 // Utility
 // ════════════════════════════════════════════════════════════════════════════
+// ════════════════════════════════════════════════════════════════════════════
+// Utility
+// ════════════════════════════════════════════════════════════════════════════
 void printResetReason() {
   esp_reset_reason_t reason = esp_reset_reason();
   Serial.printf("Reset Reason: %d\n", reason);
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Buzzer (non-blocking)
+// ════════════════════════════════════════════════════════════════════════════
+void buzzerOn(unsigned long durationMs) {
+  digitalWrite(BUZZER_PIN, HIGH);
+  buzzerActive = true;
+  buzzerDuration = durationMs;
+  timerBuzzer.prev = millis();
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// ZMPT101B Voltage Sensor
+// ════════════════════════════════════════════════════════════════════════════
+void readZMPT() {
+  // Baca ADC 100 kali untuk RMS
+  long sum = 0;
+  for (int i = 0; i < 100; i++) {
+    int raw = analogRead(ZMPT_PIN);
+    int offset = raw - 2048;  // Center around 0 (12-bit ADC midpoint)
+    sum += (long)offset * offset;
+    delayMicroseconds(200);
+  }
+  float rms = sqrt(sum / 100.0);
+  acVoltage = rms / ZMPT_CALIBRATION * 230.0;  // Scale to AC voltage
 }
