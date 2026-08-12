@@ -18,7 +18,6 @@ static const uint8_t PZEM_RX = 33;          // ESP32 RX2 ← PZEM TX
 static const uint8_t PZEM_TX = 32;          // ESP32 TX2 → PZEM RX
 static const uint8_t PZEMB_RX = 25;         // I2C SDA / Serial1 RX
 static const uint8_t PZEMB_TX = 26;         // I2C SCL / Serial1 TX
-static const uint8_t TEST_BTN_PIN = 4;      // GPIO4 - tombol toggle lampu (INPUT_PULLUP)
 
 // OLED I2C (default pins)
 static const uint8_t OLED_SDA = 21;
@@ -30,9 +29,9 @@ static const uint16_t OLED_HEIGHT = 64;
 // Buzzer
 static const uint8_t BUZZER_PIN = 23;
 
-// ZMPT101B Voltage Sensor
+// ZMPT101B Voltage Sensor (nilai raw ADC, tanpa kalibrasi)
 static const uint8_t ZMPT_PIN = 34;         // ADC1_CH6 (input only)
-static const float ZMPT_CALIBRATION = 200.0; // Kalibrasi (adjust based on module)
+static const float ZMPT_THRESHOLD = 200.0;  // Threshold RMS: >200 = PLN, <=200 = UPS
 
 // ── PZEM Objects ─────────────────────────────────────────────────────────────
 // PZEM004Tv30 constructor akan panggil Serial2.begin() otomatis
@@ -71,10 +70,23 @@ EnergyData blockB;
 bool lampAState = false;
 bool lampBState = false;
 bool wifiConnected = false;
-bool firebaseReady = false;  // Firebase connection status
+bool firebaseReady = false;
+bool plnAlarmActive = false;
+bool plnPrevState = true;
+static const int SYS_WIFI_INIT = 0;
+  static const int SYS_WIFI_CONNECTING = 1;
+  static const int SYS_WIFI_CHECK = 2;
+  static const int SYS_FIREBASE_INIT = 3;
+  static const int SYS_FIREBASE_CHECK = 4;
+  static const int SYS_READY = 5;
+  int sysState = SYS_WIFI_INIT;
+unsigned long stateStart = 0;
 
 // Debounce: ignore Firebase commands within 2s after last execution
-unsigned long lastCmdExecTime = 0;
+
+// Debounce: ignore Firebase commands within 2s after last execution
+unsigned long lastCmdExecTimeA = 0;
+unsigned long lastCmdExecTimeB = 0;
 const unsigned long CMD_DEBOUNCE_MS = 2000;
 
 // Buzzer state
@@ -93,8 +105,6 @@ FirebaseConfig config;
 WiFiManager wm;
 
 // ── Forward Declarations ─────────────────────────────────────────────────────
-void setupWiFi();
-void setupFirebase();
 void readPZEM();
 void controlSSR();
 void controlSSRB();
@@ -103,6 +113,7 @@ void setLampB(bool state);
 void updateOLED();
 void checkFirebaseCommands();
 void sendToFirebase();
+unsigned long getEpochSec();
 void printEnergyData(const EnergyData& d, const char* label);
 void buzzerOn(unsigned long durationMs);
 void readZMPT();
@@ -119,8 +130,6 @@ void setup() {
   digitalWrite(SSR_PIN_B, LOW);
 
   // Tombol toggle lampu (INPUT_PULLUP, tombol ke GND)
-  pinMode(TEST_BTN_PIN, INPUT_PULLUP);
-
   // LED builtin sebagai indikator (active LOW)
   pinMode(2, OUTPUT);
   digitalWrite(2, HIGH);
@@ -146,32 +155,93 @@ void setup() {
 
   // Serial2 sudah di-init otomatis oleh PZEM004Tv30 constructor
 
-  // WiFi: coba autoConnect (blocking) — tapi OLED sudah tampil boot screen
-  // User bisa lihat OLED menyala walaupun WiFi sedang connect
-  setupWiFi();
-  setupFirebase();
+  // WiFi & Firebase: non-blocking (dilakukan di loop())
+  wifiConnected = false;
+  firebaseReady = false;
 
-  Serial.println("=== Setup Selesai ===\n");
+  Serial.println("=== Setup Selesai (WiFi+Firebase non-blocking) ===\n");
   buzzerOn(100);
 }
 
 void loop() {
   unsigned long now = millis();
 
-  // Read physical button (GPIO4 with pullup - LOW when pressed)
-  // Debounce: ignore multiple triggers dalam 200ms
-  static unsigned long lastBtnTime = 0;
-  static bool lastBtnState = HIGH;
-  const unsigned long debounceMs = 200;  // 200ms debounce interval
+  // Non-blocking WiFi + Firebase init (state machine)
+  static bool firebaseInitialized = false;
+  if (!firebaseInitialized) {
+    switch (sysState) {
+      case SYS_WIFI_INIT:
+        wm.setConfigPortalTimeout(180);
+        wm.setConnectTimeout(30);
+        sysState = SYS_WIFI_CONNECTING;
+        stateStart = now;
+        break;
 
-  bool btnState = digitalRead(TEST_BTN_PIN);
-  if (btnState != lastBtnState) {
-    if (btnState == LOW && (now - lastBtnTime >= debounceMs)) {  // Tombol ditekan (disambungkan ke GND)
-      lastBtnTime = now;
-      setLampA(!lampAState);  // Toggle lampu
-      Serial.println("[BTN] Physical button pressed - toggling lamp");
+      case SYS_WIFI_CONNECTING:
+        Serial.println("[WiFi] Connecting (non-blocking)...");
+        WiFi.begin();
+        sysState = SYS_WIFI_CHECK;
+        stateStart = now;
+        break;
+
+      case SYS_WIFI_CHECK:
+        if (WiFi.status() == WL_CONNECTED) {
+          wifiConnected = true;
+          Serial.print("[WiFi] Connected! IP: ");
+          Serial.println(WiFi.localIP());
+          sysState = SYS_FIREBASE_INIT;
+        } else if (now - stateStart >= 30000) {
+          Serial.println("[WiFi] Timeout, restart...");
+          ESP.restart();
+        }
+        break;
+
+      case SYS_FIREBASE_INIT:
+        Serial.println("[Firebase] Initializing...");
+        config.api_key = FIREBASE_API_KEY;
+        config.database_url = FIREBASE_DATABASE_URL;
+        auth.user.email = FIREBASE_USER_EMAIL;
+        auth.user.password = FIREBASE_USER_PASSWORD;
+        Firebase.begin(&config, &auth);
+        Firebase.reconnectWiFi(true);
+        configTime(7 * 3600, 0, "pool.ntp.org", "time.nist.gov");
+        sysState = SYS_FIREBASE_CHECK;
+        stateStart = now;
+        break;
+
+      case SYS_FIREBASE_CHECK:
+        if (WiFi.status() == WL_CONNECTED && Firebase.ready()) {
+          firebaseReady = true;
+          Serial.println("[Firebase] Connected & Authenticated");
+
+          // Init default control paths
+          Firebase.RTDB.setBool(&fbdo, "/lamp/control/a", false);
+          Firebase.RTDB.setBool(&fbdo, "/lamp/control/b", false);
+
+          // Sync initial lamp state
+          bool stateA = false, stateB = false;
+          Firebase.RTDB.getBool(&fbdo, "/lamp/control/a");
+          if (fbdo.boolData()) stateA = fbdo.boolData();
+          Firebase.RTDB.getBool(&fbdo, "/lamp/control/b");
+          if (fbdo.boolData()) stateB = fbdo.boolData();
+          setLampA(stateA);
+          setLampB(stateB);
+
+          sysState = SYS_READY;
+          firebaseInitialized = true;
+          Serial.println("[System] Ready!");
+        } else if (now - stateStart >= 20000) {
+          Serial.println("[Firebase] Timeout, retry later...");
+          sysState = SYS_READY;
+          firebaseInitialized = true;
+        }
+        break;
+
+      default:
+        sysState = SYS_READY;
+        firebaseInitialized = true;
+        break;
     }
-    lastBtnState = btnState;
   }
 
   // 1. Baca PZEM tiap 5 detik
@@ -222,91 +292,7 @@ void loop() {
   }
 }
 
-// ════════════════════════════════════════════════════════════════════════════
-// WiFi Manager Setup
-// ════════════════════════════════════════════════════════════════════════════
-void setupWiFi() {
-  wm.setConfigPortalTimeout(180);
-  wm.setConnectTimeout(30);
 
-  String apName = String("SmartNaga-") + String((uint32_t)ESP.getEfuseMac(), HEX);
-
-  // autoConnect blocking: tapi OLED sudah menampilkan boot screen
-  // Loop OLED jalan setelah setup selesai
-  bool res = wm.autoConnect(apName.c_str());
-
-  if (!res) {
-    Serial.println("[WiFi] Gagal konek, restart...");
-    delay(3000);
-    ESP.restart();
-  }
-
-  wifiConnected = true;
-  Serial.print("[WiFi] Connected! IP: ");
-  Serial.println(WiFi.localIP());
-
-  // NTP sync
-  configTime(7 * 3600, 0, "pool.ntp.org", "time.nist.gov");
-  Serial.println("[NTP] Syncing time...");
-  time_t now = time(nullptr);
-  while (now < 1000000000) {
-    delay(100);
-    now = time(nullptr);
-  }
-  Serial.printf("[NTP] Time synced: %s", ctime(&now));
-}
-
-// Helper: get epoch seconds (fallback millis()/1000 if NTP not ready)
-unsigned long getEpochSec() {
-  time_t t = time(nullptr);
-  if (t > 1000000000) return (unsigned long)t;
-  return millis() / 1000;
-}
-
-// ════════════════════════════════════════════════════════════════════════════
-// Firebase Setup
-// ════════════════════════════════════════════════════════════════════════════
-void setupFirebase() {
-  config.api_key = FIREBASE_API_KEY;
-  config.database_url = FIREBASE_DATABASE_URL;
-
-  auth.user.email = FIREBASE_USER_EMAIL;
-  auth.user.password = FIREBASE_USER_PASSWORD;
-
-  Firebase.begin(&config, &auth);
-  Firebase.reconnectWiFi(true);
-
-  delay(2000);
-
-  if (WiFi.status() == WL_CONNECTED && Firebase.ready()) {
-    firebaseReady = true;
-    Serial.println("[Firebase] Connected & Authenticated");
-
-    // Inisialisasi default control paths
-    Firebase.RTDB.setBool(&fbdo, "/lamp/control/a", false);
-    Firebase.RTDB.setBool(&fbdo, "/lamp/control/b", false);
-    Serial.println("[Firebase] Default control paths initialized.");
-
-    // Sync awal: baca status lampu dari RTDB
-    bool stateA = false;
-    if (Firebase.RTDB.getBool(&fbdo, "/lamp/control/a")) {
-      stateA = fbdo.boolData();
-    }
-    setLampA(stateA);
-
-    bool stateB = false;
-    if (Firebase.RTDB.getBool(&fbdo, "/lamp/control/b")) {
-      stateB = fbdo.boolData();
-    }
-    setLampB(stateB);
-    Serial.println("[Firebase] Initial lamp state synced from RTDB.");
-  } else {
-    firebaseReady = false;
-    Serial.println("[Firebase] FAILED! Check credentials.");
-  }
-}
-
-// ════════════════════════════════════════════════════════════════════════════
 // PZEM Reading
 // ════════════════════════════════════════════════════════════════════════════
 void readPZEM() {
@@ -378,14 +364,14 @@ void controlSSRB() {
 void setLampA(bool state) {
   lampAState = state;
   controlSSR();
-  buzzerOn(50);
+  buzzerOn(100);
   Serial.printf("[SSR] Lampu Blok A: %s\n", state ? "ON" : "OFF");
 }
 
 void setLampB(bool state) {
   lampBState = state;
   controlSSRB();
-  buzzerOn(50);
+  buzzerOn(100);
   Serial.printf("[SSR] Lampu Blok B: %s\n", state ? "ON" : "OFF");
 }
 
@@ -400,9 +386,8 @@ void updateOLED() {
   display.setCursor(0, 0);
   display.print(wifiConnected ? "WiFi: ON" : "WiFi: --");
 
-  const char* source = "None";
-  if (acVoltage > 180.0) source = "PLN";
-  else if (acVoltage > 150.0) source = "UPS";
+  const char* source = "UPS";
+  if (acVoltage > ZMPT_THRESHOLD) source = "PLN";
 
   display.setCursor(70, 0);
   display.printf("Src:%s", source);
@@ -443,9 +428,9 @@ void checkFirebaseCommands() {
   // Baca /lamp/control/a (boolean)
   if (Firebase.RTDB.getBool(&fbdo, "/lamp/control/a")) {
     bool cmd = fbdo.boolData();
-    if (cmd != lampAState && (now - lastCmdExecTime >= CMD_DEBOUNCE_MS)) {
+    if (cmd != lampAState && (now - lastCmdExecTimeA >= CMD_DEBOUNCE_MS)) {
       setLampA(cmd);
-      lastCmdExecTime = now;
+      lastCmdExecTimeA = now;
       Serial.println("[Firebase] Command executed Blok A.");
     }
   }
@@ -453,9 +438,9 @@ void checkFirebaseCommands() {
   // Baca /lamp/control/b (boolean)
   if (Firebase.RTDB.getBool(&fbdo, "/lamp/control/b")) {
     bool cmd = fbdo.boolData();
-    if (cmd != lampBState && (now - lastCmdExecTime >= CMD_DEBOUNCE_MS)) {
+    if (cmd != lampBState && (now - lastCmdExecTimeB >= CMD_DEBOUNCE_MS)) {
       setLampB(cmd);
-      lastCmdExecTime = now;
+      lastCmdExecTimeB = now;
       Serial.println("[Firebase] Command executed Blok B.");
     }
   } else {
@@ -491,11 +476,19 @@ void sendToFirebase() {
   energyJsonB.set("timestamp", (double)ts);
   Firebase.RTDB.setJSON(&fbdo, "/energy/block_b", &energyJsonB);
 
-  // Kirim ZMPT voltage ke /energy/z_mpt
+  // Kirim status PLN ke /energy/z_mpt (true = PLN ada, false = UPS)
   FirebaseJson zMptJson;
-  zMptJson.set("voltage", acVoltage);
+  zMptJson.set("pln", acVoltage > ZMPT_THRESHOLD);
   zMptJson.set("timestamp", (double)ts);
   Firebase.RTDB.setJSON(&fbdo, "/energy/z_mpt", &zMptJson);
+
+  // Kirim status PLN terpisah untuk notifikasi Cloud Function
+  FirebaseJson plnJson;
+  bool plnAvailable = acVoltage > ZMPT_THRESHOLD;
+  plnJson.set("available", plnAvailable);
+  plnJson.set("source", plnAvailable ? "PLN" : "UPS");
+  plnJson.set("timestamp", (double)ts);
+  Firebase.RTDB.setJSON(&fbdo, "/energy/pln_status", &plnJson);
 
   // Note: /lamp/status/{a,b} ditulis oleh aplikasi (updateLampControl)
   // Firmware hanya baca /lamp/control/{a,b} untuk eksekusi perintah
@@ -507,6 +500,12 @@ void sendToFirebase() {
 // ════════════════════════════════════════════════════════════════════════════
 // Utility
 // ════════════════════════════════════════════════════════════════════════════
+unsigned long getEpochSec() {
+  time_t t = time(nullptr);
+  if (t > 1000000000) return (unsigned long)t;
+  return millis() / 1000;
+}
+
 void printResetReason() {
   esp_reset_reason_t reason = esp_reset_reason();
   Serial.printf("Reset Reason: %d\n", reason);
@@ -526,24 +525,63 @@ void buzzerOn(unsigned long durationMs) {
 // ZMPT101B Voltage Sensor
 // ════════════════════════════════════════════════════════════════════════════
 void readZMPT() {
-  // Baca ADC 100 kali untuk RMS
-  long sum = 0;
-  for (int i = 0; i < 100; i++) {
-    int raw = analogRead(ZMPT_PIN);
-    int offset = raw - 2048;  // Center around 0 (12-bit ADC midpoint)
-    sum += (long)offset * offset;
-    delayMicroseconds(200);
+  // Baca ADC untuk baseline (rata-rata DC offset)
+  long sumRaw = 0;
+  for (int i = 0; i < 200; i++) {
+    sumRaw += analogRead(ZMPT_PIN);
+    delayMicroseconds(50);
   }
-  float rms = sqrt(sum / 100.0);
-  acVoltage = rms / ZMPT_CALIBRATION * 230.0;  // Scale to AC voltage
+  float baseline = sumRaw / 200.0;
+
+  // Baca ADC untuk RMS (200 samples)
+  long sum = 0;
+  int minVal = 4095, maxVal = 0;
+  for (int i = 0; i < 200; i++) {
+    int raw = analogRead(ZMPT_PIN);
+    int offset = raw - (int)baseline;
+    sum += (long)offset * offset;
+    if (raw < minVal) minVal = raw;
+    if (raw > maxVal) maxVal = raw;
+    delayMicroseconds(100);
+  }
+  float rms = sqrt(sum / 200.0);
+  int peakToPeak = maxVal - minVal;
+
+  // Deteksi invalid:
+  // 1. RMS < 30 = noise floor (tidak ada tegangan AC)
+  // 2. peak-to-peak < 20 = pin floating atau DC saja
+  // 3. RMS > 500 = ADC saturate
+  bool plnAvailable = false;
+  if (rms >= 30.0 && peakToPeak >= 20 && rms <= 500.0 && rms > ZMPT_THRESHOLD) {
+    plnAvailable = true;
+  }
+
+  // acVoltage diisi RMS raw (tanpa kalibrasi) untuk display
+  acVoltage = (plnAvailable || rms >= 30.0) ? rms : 0.0;
 
   // Print ke Serial Monitor tiap ~5 detik (throttle)
   static unsigned long lastPrint = 0;
   if (millis() - lastPrint >= 5000) {
     lastPrint = millis();
-    const char* src = "None";
-    if (acVoltage > 180.0) src = "PLN";
-    else if (acVoltage > 150.0) src = "UPS";
-    Serial.printf("[ZMPT] V: %.1fV  RMS: %.1f  Src: %s\n", acVoltage, rms, src);
+    const char* src = plnAvailable ? "PLN" : "UPS";
+    Serial.printf("[ZMPT] RMS: %.1f  P2P: %d  Baseline: %.1f  Src: %s\n", rms, peakToPeak, baseline, src);
   }
+
+  // Alarm PLN mati: transisi PLN -> UPS = beep periodik tiap 2 detik
+  static unsigned long lastPlnAlarm = 0;
+  if (plnPrevState && !plnAvailable) {
+    plnAlarmActive = true;
+    lastPlnAlarm = millis();
+    buzzerOn(200);
+    Serial.println("[ALARM] PLN MATI!");
+  } else if (!plnPrevState && plnAvailable) {
+    plnAlarmActive = false;
+    Serial.println("[ALARM] PLN KEMBALI");
+  }
+  // Repeat alarm every 2s while PLN is still down
+  if (plnAlarmActive && (millis() - lastPlnAlarm >= 2000)) {
+    lastPlnAlarm = millis();
+    buzzerOn(200);
+  }
+  plnPrevState = plnAvailable;
 }
