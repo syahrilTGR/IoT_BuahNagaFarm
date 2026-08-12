@@ -8,9 +8,14 @@ note:
 - nyalanya lampu tu ngga semalaman
 - ssr udah bisa, dari esp langsung ssr, sebelumnya pake LLC, gabisa, kyk nya LLC nya rusak, di sisi 5v ngga mau ke state low
 
+di esp
+- daya di oled buat atas bawah aja
+
 di App
 - tambah estimasi rup
 - coba ekspor historis dari firestore ke spreadsheet/csv
+- di setting, tambahkan inputan daya dan jumlah lampu default, yang nantinya disimpan ke firebase dan digunakan sebagai acuan kondisi normal atau tidak
+- notif lampu padam (dari ZMPT), nanti source nya berubah jadi UPS
 
 ---
 

@@ -1,0 +1,41 @@
+{
+  "energy": {
+    "block_a": {
+      "current": 0,
+      "energy": 0.004,
+      "power": 0,
+      "timestamp": 466,
+      "voltage": 235.2
+    },
+    "block_b": {
+      "current": 0.11,
+      "energy": 11.8,
+      "power": 9.9,
+      "timestamp": 1234567890,
+      "voltage": 220.3
+    }
+  },
+  "lamp": {
+    "control": {
+      "a": false,
+      "b": false
+    },
+    "status": {
+      "a": {
+        "state": false,
+        "timestamp": 466
+      },
+      "b": {
+        "state": false,
+        "timestamp": 1786420375670
+      }
+    }
+  },
+  "test": {
+    "status": {
+      "lamp": false,
+      "rssi": -75,
+      "uptime": 55
+    }
+  }
+}
