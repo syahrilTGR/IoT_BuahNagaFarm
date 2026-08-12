@@ -536,4 +536,14 @@ void readZMPT() {
   }
   float rms = sqrt(sum / 100.0);
   acVoltage = rms / ZMPT_CALIBRATION * 230.0;  // Scale to AC voltage
+
+  // Print ke Serial Monitor tiap ~5 detik (throttle)
+  static unsigned long lastPrint = 0;
+  if (millis() - lastPrint >= 5000) {
+    lastPrint = millis();
+    const char* src = "None";
+    if (acVoltage > 180.0) src = "PLN";
+    else if (acVoltage > 150.0) src = "UPS";
+    Serial.printf("[ZMPT] V: %.1fV  RMS: %.1f  Src: %s\n", acVoltage, rms, src);
+  }
 }
