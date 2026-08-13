@@ -31,7 +31,7 @@ static const uint8_t BUZZER_PIN = 23;
 
 // ZMPT101B Voltage Sensor (nilai raw ADC, tanpa kalibrasi)
 static const uint8_t ZMPT_PIN = 34;         // ADC1_CH6 (input only)
-static const float ZMPT_THRESHOLD = 200.0;  // Threshold RMS: >200 = PLN, <=200 = UPS
+static const float ZMPT_THRESHOLD = 180.0;  // Threshold RMS: >180 = PLN, <=180 = UPS
 
 // ── PZEM Objects ─────────────────────────────────────────────────────────────
 // PZEM004Tv30 constructor akan panggil Serial2.begin() otomatis
@@ -76,9 +76,10 @@ bool plnPrevState = true;
 static const int SYS_WIFI_INIT = 0;
   static const int SYS_WIFI_CONNECTING = 1;
   static const int SYS_WIFI_CHECK = 2;
-  static const int SYS_FIREBASE_INIT = 3;
-  static const int SYS_FIREBASE_CHECK = 4;
-  static const int SYS_READY = 5;
+  static const int SYS_WIFI_PORTAL = 3;
+  static const int SYS_FIREBASE_INIT = 4;
+  static const int SYS_FIREBASE_CHECK = 5;
+  static const int SYS_READY = 6;
   int sysState = SYS_WIFI_INIT;
 unsigned long stateStart = 0;
 
@@ -191,8 +192,28 @@ void loop() {
           Serial.println(WiFi.localIP());
           sysState = SYS_FIREBASE_INIT;
         } else if (now - stateStart >= 30000) {
-          Serial.println("[WiFi] Timeout, restart...");
-          ESP.restart();
+          // Fallback ke Config Portal AP
+          Serial.println("[WiFi] Connect failed, starting Config Portal...");
+          sysState = SYS_WIFI_PORTAL;
+          stateStart = now;
+        }
+        break;
+
+      case SYS_WIFI_PORTAL:
+        Serial.println("[WiFi] Starting Config Portal (AP mode)...");
+        {
+          String apName = String("SmartNaga-") + String((uint32_t)ESP.getEfuseMac(), HEX);
+          bool res = wm.startConfigPortal(apName.c_str());
+          if (res) {
+            wifiConnected = true;
+            Serial.print("[WiFi] Connected via Portal! IP: ");
+            Serial.println(WiFi.localIP());
+            sysState = SYS_FIREBASE_INIT;
+          } else {
+            Serial.println("[WiFi] Config Portal failed, restart...");
+            delay(3000);
+            ESP.restart();
+          }
         }
         break;
 
