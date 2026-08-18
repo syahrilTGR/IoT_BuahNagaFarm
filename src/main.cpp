@@ -8,16 +8,19 @@
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
 
+#include <RTClib.h>
+RTC_DS3231 rtc;
+
 // NTP time sync
 #include "time.h"
 
 // ── Pin Definition ───────────────────────────────────────────────────────────
 static const uint8_t SSR_PIN = 13;          // D13 → SSR (Blok A)
-static const uint8_t SSR_PIN_B = 27;        // GPIO27 → SSR (Blok B)
+static const uint8_t SSR_PIN_B = 4;         // GPIO4 → SSR (Blok B), moved from 27 untuk avoid buzzer noise
 static const uint8_t PZEM_RX = 33;          // ESP32 RX2 ← PZEM TX
 static const uint8_t PZEM_TX = 32;          // ESP32 TX2 → PZEM RX
-static const uint8_t PZEMB_RX = 25;         // I2C SDA / Serial1 RX
-static const uint8_t PZEMB_TX = 26;         // I2C SCL / Serial1 TX
+static const uint8_t PZEMB_RX = 25;         // Serial1 RX ← PZEM B TX
+static const uint8_t PZEMB_TX = 26;         // Serial1 TX → PZEM B RX
 
 // OLED I2C (default pins)
 static const uint8_t OLED_SDA = 21;
@@ -27,7 +30,7 @@ static const uint16_t OLED_WIDTH = 128;
 static const uint16_t OLED_HEIGHT = 64;
 
 // Buzzer
-static const uint8_t BUZZER_PIN = 23;
+static const uint8_t BUZZER_PIN = 27;        // GPIO27 → Buzzer (moved from 23, was noise-sensitive)
 
 // ZMPT101B Voltage Sensor (nilai raw ADC, tanpa kalibrasi)
 static const uint8_t ZMPT_PIN = 34;         // ADC1_CH6 (input only)
@@ -90,9 +93,11 @@ unsigned long lastCmdExecTimeA = 0;
 unsigned long lastCmdExecTimeB = 0;
 const unsigned long CMD_DEBOUNCE_MS = 2000;
 
-// Buzzer state
+// ── Buzzer state ─────────────────────────────────────────────────────────────
 bool buzzerActive = false;
 unsigned long buzzerDuration = 0;
+bool buzzerPending = false;        // ada beep yang menunggu di antrian
+unsigned long buzzerPendingDuration = 0;
 
 // ZMPT voltage reading
 float acVoltage = 0.0;
@@ -118,6 +123,7 @@ unsigned long getEpochSec();
 void printEnergyData(const EnergyData& d, const char* label);
 void buzzerOn(unsigned long durationMs);
 void readZMPT();
+void syncRTC();
 
 void setup() {
   Serial.begin(115200);
@@ -154,6 +160,15 @@ void setup() {
     Serial.println("[OLED] Initialized");
   }
 
+  // RTC init
+  if (!rtc.begin()) {
+    Serial.println("[RTC] Not found");
+    // set to compile time if RTC missing
+    rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
+  } else {
+    Serial.println("[RTC] Initialized");
+  }
+
   // Serial2 sudah di-init otomatis oleh PZEM004Tv30 constructor
 
   // WiFi & Firebase: non-blocking (dilakukan di loop())
@@ -161,7 +176,7 @@ void setup() {
   firebaseReady = false;
 
   Serial.println("=== Setup Selesai (WiFi+Firebase non-blocking) ===\n");
-  buzzerOn(100);
+  buzzerOn(200);
 }
 
 void loop() {
@@ -251,6 +266,8 @@ void loop() {
           sysState = SYS_READY;
           firebaseInitialized = true;
           Serial.println("[System] Ready!");
+
+          syncRTC();  // Sync RTC time from NTP
         } else if (now - stateStart >= 20000) {
           Serial.println("[Firebase] Timeout, retry later...");
           sysState = SYS_READY;
@@ -292,10 +309,18 @@ void loop() {
     updateOLED();
   }
 
-  // 6. Buzzer non-blocking
+  // 6. Buzzer non-blocking (queue: jika ada pending, antri setelah yang aktif selesai)
   if (buzzerActive && (now - timerBuzzer.prev >= buzzerDuration)) {
     digitalWrite(BUZZER_PIN, LOW);
+    Serial.printf("[BUZZ] off after %lums\n", buzzerDuration);
     buzzerActive = false;
+    if (buzzerPending) {
+      digitalWrite(BUZZER_PIN, HIGH);
+      buzzerActive = true;
+      buzzerDuration = buzzerPendingDuration;
+      timerBuzzer.prev = now;
+      buzzerPending = false;
+    }
   }
 
   // 7. Baca ZMPT tiap 100ms
@@ -385,14 +410,16 @@ void controlSSRB() {
 void setLampA(bool state) {
   lampAState = state;
   controlSSR();
-  buzzerOn(100);
+  delay(30);  // tunggu SSR settle sebelum buzzer
+  buzzerOn(200);
   Serial.printf("[SSR] Lampu Blok A: %s\n", state ? "ON" : "OFF");
 }
 
 void setLampB(bool state) {
   lampBState = state;
   controlSSRB();
-  buzzerOn(100);
+  delay(30);  // tunggu SSR settle sebelum buzzer
+  buzzerOn(200);
   Serial.printf("[SSR] Lampu Blok B: %s\n", state ? "ON" : "OFF");
 }
 
@@ -413,15 +440,10 @@ void updateOLED() {
   display.setCursor(70, 0);
   display.printf("Src:%s", source);
 
-  // Line 2: Waktu (NTP)
+  // Line 2: Waktu (RTC)
   display.setCursor(0, 16);
-  time_t t = time(nullptr);
-  if (t > 1000000000) {
-    struct tm* tm = localtime(&t);
-    display.printf("%02d:%02d:%02d", tm->tm_hour, tm->tm_min, tm->tm_sec);
-  } else {
-    display.print("--:--:--");
-  }
+  DateTime now = rtc.now();
+  display.printf("%02d:%02d:%02d", now.hour(), now.minute(), now.second());
 
   // Line 3-4: Power A dan B vertikal (atas-bawah), text size 2
   display.setTextSize(2);
@@ -532,14 +554,41 @@ void printResetReason() {
   Serial.printf("Reset Reason: %d\n", reason);
 }
 
+// Sync RTC dari NTP (panggil sekali setelah WiFi connected)
+void syncRTC() {
+  configTime(7 * 3600, 0, "pool.ntp.org", "time.nist.gov");
+  delay(2000);  // tunggu NTP sync
+  time_t t = time(nullptr);
+  if (t > 1000000000) {
+    struct tm* tm = localtime(&t);
+    rtc.adjust(DateTime(
+      tm->tm_year + 1900, tm->tm_mon + 1, tm->tm_mday,
+      tm->tm_hour, tm->tm_min, tm->tm_sec
+    ));
+    Serial.printf("[RTC] Synced from NTP: %04d-%02d-%02d %02d:%02d:%02d\n",
+      tm->tm_year + 1900, tm->tm_mon + 1, tm->tm_mday,
+      tm->tm_hour, tm->tm_min, tm->tm_sec);
+  } else {
+    Serial.println("[RTC] NTP sync failed");
+  }
+}
+
 // ════════════════════════════════════════════════════════════════════════════
 // Buzzer (non-blocking)
 // ════════════════════════════════════════════════════════════════════════════
 void buzzerOn(unsigned long durationMs) {
-  digitalWrite(BUZZER_PIN, HIGH);
-  buzzerActive = true;
-  buzzerDuration = durationMs;
-  timerBuzzer.prev = millis();
+  Serial.printf("[BUZZ] req=%lums active=%d pending=%d\n", durationMs, buzzerActive, buzzerPending);
+  if (buzzerActive) {
+    buzzerPending = true;
+    buzzerPendingDuration = durationMs;
+    Serial.println("[BUZZ] -> queued (pending)");
+  } else {
+    digitalWrite(BUZZER_PIN, HIGH);
+    buzzerActive = true;
+    buzzerDuration = durationMs;
+    timerBuzzer.prev = millis();
+    Serial.println("[BUZZ] -> started (active)");
+  }
 }
 
 // ════════════════════════════════════════════════════════════════════════════
