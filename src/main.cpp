@@ -52,7 +52,7 @@ struct Timer {
   Timer(unsigned long p, unsigned long i) : prev(p), interval(i) {}
 };
 
-Timer timerPZEM      {0, 5000};   // Baca PZEM tiap 5 detik (blocking ~7s, jangan terlalu sering)
+Timer timerPZEM      {0, 1000};   // Baca PZEM tiap 1 detik (skip saat PLN mati)
 Timer timerFirebase  {0, 1000};   // Kirim ke Firebase tiap 1 detik
 Timer timerOLED      {0, 1000};   // Update OLED tiap 1 detik
 Timer timerCheckCmd  {0, 100};    // Cek perintah Firebase tiap 100ms
@@ -97,6 +97,7 @@ const unsigned long CMD_DEBOUNCE_MS = 2000;
 // ── Buzzer state ─────────────────────────────────────────────────────────────
 bool buzzerActive = false;
 unsigned long buzzerDuration = 0;
+unsigned long buzzerOffTime = 0;  // track when buzzer last turned OFF (for alarm silence gap)
 
 // ZMPT voltage reading
 float acVoltage = 0.0;
@@ -291,10 +292,11 @@ void loop() {
   if (buzzerActive && (now - timerBuzzer.prev >= buzzerDuration)) {
     digitalWrite(BUZZER_PIN, LOW);
     buzzerActive = false;
+    buzzerOffTime = now;  // track OFF time for minimum silence gap
   }
 
-  // 0b. PLN alarm repeat (triggered from readZMPT() state)
-  if (plnAlarmActive && !buzzerActive && (now - lastPlnAlarm >= 2000)) {
+  // 0b. PLN alarm repeat — require 1s minimum silence after buzzer OFF
+  if (plnAlarmActive && !buzzerActive && (now - lastPlnAlarm >= 3000) && (now - buzzerOffTime >= 1000)) {
     lastPlnAlarm = now;
     buzzerOn(500);
   }
@@ -593,6 +595,14 @@ void buzzerOn(unsigned long durationMs) {
 // ZMPT101B Voltage Sensor
 // ════════════════════════════════════════════════════════════════════════════
 void readZMPT() {
+  // Safety net: cek buzzer-OFF sebelum blocking ADC sampling
+  unsigned long ms = millis();
+  if (buzzerActive && (ms - timerBuzzer.prev >= buzzerDuration)) {
+    digitalWrite(BUZZER_PIN, LOW);
+    buzzerActive = false;
+    buzzerOffTime = ms;
+  }
+
   // Baca ADC untuk baseline (rata-rata DC offset)
   long sumRaw = 0;
   for (int i = 0; i < 200; i++) {
