@@ -52,7 +52,7 @@ struct Timer {
   Timer(unsigned long p, unsigned long i) : prev(p), interval(i) {}
 };
 
-Timer timerPZEM      {0, 1000};   // Baca PZEM tiap 1 detik
+Timer timerPZEM      {0, 5000};   // Baca PZEM tiap 5 detik (blocking ~7s, jangan terlalu sering)
 Timer timerFirebase  {0, 1000};   // Kirim ke Firebase tiap 1 detik
 Timer timerOLED      {0, 1000};   // Update OLED tiap 1 detik
 Timer timerCheckCmd  {0, 100};    // Cek perintah Firebase tiap 100ms
@@ -75,7 +75,8 @@ bool lampBState = false;
 bool wifiConnected = false;
 bool firebaseReady = false;
 bool plnAlarmActive = false;
-bool plnPrevState = true;
+bool plnPrevState = true;   // assume PLN on at boot → first UPS detection triggers alarm
+unsigned long lastPlnAlarm = 0;
 static const int SYS_WIFI_INIT = 0;
   static const int SYS_WIFI_CONNECTING = 1;
   static const int SYS_WIFI_CHECK = 2;
@@ -96,8 +97,6 @@ const unsigned long CMD_DEBOUNCE_MS = 2000;
 // ── Buzzer state ─────────────────────────────────────────────────────────────
 bool buzzerActive = false;
 unsigned long buzzerDuration = 0;
-bool buzzerPending = false;        // ada beep yang menunggu di antrian
-unsigned long buzzerPendingDuration = 0;
 
 // ZMPT voltage reading
 float acVoltage = 0.0;
@@ -170,6 +169,12 @@ void setup() {
   }
 
   // Serial2 sudah di-init otomatis oleh PZEM004Tv30 constructor
+
+// Default lampu OFF saat boot (sebelum sync Firebase)
+  lampAState = false;
+  lampBState = false;
+  controlSSR();
+  controlSSRB();
 
   // WiFi & Firebase: non-blocking (dilakukan di loop())
   wifiConnected = false;
@@ -282,8 +287,20 @@ void loop() {
     }
   }
 
-  // 1. Baca PZEM tiap 5 detik
-  if (now - timerPZEM.prev >= timerPZEM.interval) {
+  // 0. Buzzer + PLN alarm — PALING PERTAMA, sebelum semua blocking call
+  if (buzzerActive && (now - timerBuzzer.prev >= buzzerDuration)) {
+    digitalWrite(BUZZER_PIN, LOW);
+    buzzerActive = false;
+  }
+
+  // 0b. PLN alarm repeat (triggered from readZMPT() state)
+  if (plnAlarmActive && !buzzerActive && (now - lastPlnAlarm >= 2000)) {
+    lastPlnAlarm = now;
+    buzzerOn(500);
+  }
+
+  // 1. Baca PZEM tiap 5 detik — skip saat PLN mati (PZEM AC-powered, read akan block ~7s)
+  if (now - timerPZEM.prev >= timerPZEM.interval && acVoltage > ZMPT_THRESHOLD) {
     timerPZEM.prev = now;
     readPZEM();
   }
@@ -297,7 +314,7 @@ void loop() {
     checkFirebaseCommands();
   }
 
-  // 4. Kirim data ke Firebase tiap 10 detik
+  // 4. Kirim data ke Firebase tiap 1 detik
   if (now - timerFirebase.prev >= timerFirebase.interval) {
     timerFirebase.prev = now;
     sendToFirebase();
@@ -309,21 +326,7 @@ void loop() {
     updateOLED();
   }
 
-  // 6. Buzzer non-blocking (queue: jika ada pending, antri setelah yang aktif selesai)
-  if (buzzerActive && (now - timerBuzzer.prev >= buzzerDuration)) {
-    digitalWrite(BUZZER_PIN, LOW);
-    Serial.printf("[BUZZ] off after %lums\n", buzzerDuration);
-    buzzerActive = false;
-    if (buzzerPending) {
-      digitalWrite(BUZZER_PIN, HIGH);
-      buzzerActive = true;
-      buzzerDuration = buzzerPendingDuration;
-      timerBuzzer.prev = now;
-      buzzerPending = false;
-    }
-  }
-
-  // 7. Baca ZMPT tiap 100ms
+  // 6. Baca ZMPT tiap 100ms
   if (now - timerZMPT.prev >= timerZMPT.interval) {
     timerZMPT.prev = now;
     readZMPT();
@@ -410,7 +413,6 @@ void controlSSRB() {
 void setLampA(bool state) {
   lampAState = state;
   controlSSR();
-  delay(30);  // tunggu SSR settle sebelum buzzer
   buzzerOn(200);
   Serial.printf("[SSR] Lampu Blok A: %s\n", state ? "ON" : "OFF");
 }
@@ -418,7 +420,6 @@ void setLampA(bool state) {
 void setLampB(bool state) {
   lampBState = state;
   controlSSRB();
-  delay(30);  // tunggu SSR settle sebelum buzzer
   buzzerOn(200);
   Serial.printf("[SSR] Lampu Blok B: %s\n", state ? "ON" : "OFF");
 }
@@ -581,18 +582,11 @@ void syncRTC() {
 // Buzzer (non-blocking)
 // ════════════════════════════════════════════════════════════════════════════
 void buzzerOn(unsigned long durationMs) {
-  Serial.printf("[BUZZ] req=%lums active=%d pending=%d\n", durationMs, buzzerActive, buzzerPending);
-  if (buzzerActive) {
-    buzzerPending = true;
-    buzzerPendingDuration = durationMs;
-    Serial.println("[BUZZ] -> queued (pending)");
-  } else {
-    digitalWrite(BUZZER_PIN, HIGH);
-    buzzerActive = true;
-    buzzerDuration = durationMs;
-    timerBuzzer.prev = millis();
-    Serial.println("[BUZZ] -> started (active)");
-  }
+  digitalWrite(BUZZER_PIN, HIGH);
+  buzzerActive = true;
+  buzzerDuration = durationMs;
+  timerBuzzer.prev = millis();
+  Serial.printf("[%lu][BUZZ] %lums\n", millis()/1000, durationMs);
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -638,24 +632,18 @@ void readZMPT() {
   if (millis() - lastPrint >= 5000) {
     lastPrint = millis();
     const char* src = plnAvailable ? "PLN" : "UPS";
-    Serial.printf("[ZMPT] RMS: %.1f  P2P: %d  Baseline: %.1f  Src: %s\n", rms, peakToPeak, baseline, src);
+    Serial.printf("[%lu][ZMPT] RMS:%.1f P2P:%d Base:%.1f Src:%s\n", millis()/1000, rms, peakToPeak, baseline, src);
   }
 
-  // Alarm PLN mati: transisi PLN -> UPS = beep periodik tiap 2 detik
-  static unsigned long lastPlnAlarm = 0;
+  // Alarm PLN mati: transisi PLN -> UPS = beep 500ms
   if (plnPrevState && !plnAvailable) {
     plnAlarmActive = true;
     lastPlnAlarm = millis();
-    buzzerOn(200);
-    Serial.println("[ALARM] PLN MATI!");
+    buzzerOn(500);
+    Serial.printf("[%lu][ALARM] PLN MATI!\n", millis()/1000);
   } else if (!plnPrevState && plnAvailable) {
     plnAlarmActive = false;
-    Serial.println("[ALARM] PLN KEMBALI");
-  }
-  // Repeat alarm every 2s while PLN is still down
-  if (plnAlarmActive && (millis() - lastPlnAlarm >= 2000)) {
-    lastPlnAlarm = millis();
-    buzzerOn(200);
+    Serial.printf("[%lu][ALARM] PLN KEMBALI\n", millis()/1000);
   }
   plnPrevState = plnAvailable;
 }
