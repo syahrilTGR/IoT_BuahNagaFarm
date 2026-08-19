@@ -17,6 +17,8 @@ di App
 - di setting, tambahkan inputan daya dan jumlah lampu default, yang nantinya disimpan ke firebase dan digunakan sebagai acuan kondisi normal atau tidak
 - notif lampu padam (dari ZMPT), nanti source nya berubah jadi UPS
 
+di RTDB
+- add tugangan zmpt ke firebase
 ---
 
 ## Firmware
