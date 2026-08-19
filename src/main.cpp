@@ -52,8 +52,8 @@ struct Timer {
   Timer(unsigned long p, unsigned long i) : prev(p), interval(i) {}
 };
 
-Timer timerPZEM      {0, 5000};   // Baca PZEM tiap 5 detik
-Timer timerFirebase  {0, 10000};  // Kirim ke Firebase tiap 10 detik
+Timer timerPZEM      {0, 1000};   // Baca PZEM tiap 1 detik
+Timer timerFirebase  {0, 1000};   // Kirim ke Firebase tiap 1 detik
 Timer timerOLED      {0, 1000};   // Update OLED tiap 1 detik
 Timer timerCheckCmd  {0, 100};    // Cek perintah Firebase tiap 100ms
 Timer timerBuzzer    {0, 0};      // Buzzer non-blocking
@@ -519,9 +519,10 @@ void sendToFirebase() {
   energyJsonB.set("timestamp", (double)ts);
   Firebase.RTDB.setJSON(&fbdo, "/energy/block_b", &energyJsonB);
 
-  // Kirim status PLN ke /energy/z_mpt (true = PLN ada, false = UPS)
+  // Kirim status PLN + raw RMS ke /energy/z_mpt
   FirebaseJson zMptJson;
   zMptJson.set("pln", acVoltage > ZMPT_THRESHOLD);
+  zMptJson.set("voltage_raw", acVoltage);
   zMptJson.set("timestamp", (double)ts);
   Firebase.RTDB.setJSON(&fbdo, "/energy/z_mpt", &zMptJson);
 
@@ -532,6 +533,9 @@ void sendToFirebase() {
   plnJson.set("source", plnAvailable ? "PLN" : "UPS");
   plnJson.set("timestamp", (double)ts);
   Firebase.RTDB.setJSON(&fbdo, "/energy/pln_status", &plnJson);
+
+  // Heartbeat: device online status (updated tiap 1s bersama energy data)
+  Firebase.RTDB.setInt(&fbdo, "/device/heartbeat", (int)ts);
 
   // Note: /lamp/status/{a,b} ditulis oleh aplikasi (updateLampControl)
   // Firmware hanya baca /lamp/control/{a,b} untuk eksekusi perintah
