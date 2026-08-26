@@ -52,8 +52,8 @@ struct Timer {
   Timer(unsigned long p, unsigned long i) : prev(p), interval(i) {}
 };
 
-Timer timerPZEM      {0, 1000};   // Baca PZEM tiap 1 detik (skip saat PLN mati)
-Timer timerFirebase  {0, 1000};   // Kirim ke Firebase tiap 1 detik
+Timer timerPZEM      {0, 2500};   // Baca PZEM tiap 2 detik (skip saat PLN mati)
+Timer timerFirebase  {0, 2500};   // Kirim ke Firebase tiap 2 detik
 Timer timerOLED      {0, 1000};   // Update OLED tiap 1 detik
 Timer timerCheckCmd  {0, 100};    // Cek perintah Firebase tiap 100ms
 Timer timerBuzzer    {0, 0};      // Buzzer non-blocking
@@ -289,15 +289,16 @@ void loop() {
   }
 
   // 0. Buzzer + PLN alarm — PALING PERTAMA, sebelum semua blocking call
-  if (buzzerActive && (now - timerBuzzer.prev >= buzzerDuration)) {
+  //   Pakai millis() langsung (bukan `now`) karena `now` bisa stale
+  if (buzzerActive && (millis() - timerBuzzer.prev >= buzzerDuration)) {
     digitalWrite(BUZZER_PIN, LOW);
     buzzerActive = false;
-    buzzerOffTime = now;  // track OFF time for minimum silence gap
+    buzzerOffTime = millis();
   }
 
   // 0b. PLN alarm repeat — require 1s minimum silence after buzzer OFF
-  if (plnAlarmActive && !buzzerActive && (now - lastPlnAlarm >= 3000) && (now - buzzerOffTime >= 1000)) {
-    lastPlnAlarm = now;
+  if (plnAlarmActive && !buzzerActive && (millis() - lastPlnAlarm >= 3000) && (millis() - buzzerOffTime >= 1000)) {
+    lastPlnAlarm = millis();
     buzzerOn(500);
   }
 
