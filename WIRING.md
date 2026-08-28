@@ -176,9 +176,14 @@ GND ─────────►  HV GND         ──►  LV GND
 **Pin yang digunakan:**
 - GPIO16 (RX2) — PZEM TX
 - GPIO17 (TX2) — PZEM RX
-- GPIO13 (D13) — SSR Control
+- GPIO14 (D14) — SSR A (Blok A)
+- GPIO13 (D13) — SSR B (Blok B)
 - GPIO2  (D2)  — Built-in LED (test)
-- GPIO4  (D4)  — Button (test)
+- GPIO23 — Buzzer
+- GPIO34 — ZMPT101B ADC
+- GPIO21/22 — I2C SDA/SCL (OLED + RTC)
+- GPIO25/26 — UART1 (PZEM-B)
+- GPIO33/32 — UART2 (PZEM-A)
 - 3.3V   — PZEM VCC
 - GND    — Common ground
 

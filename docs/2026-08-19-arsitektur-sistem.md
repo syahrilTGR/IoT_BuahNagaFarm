@@ -9,6 +9,24 @@
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
+│                    ARUS DAYA AC                                 │
+│                                                                   │
+│   PLN 220V ── [ZMPT101B] ── [Stopkontak] ── UPS AC Output      │
+│                  (clip-on)                         │            │
+│                   │                               │            │
+│                   │                          SSR_A ── Lampu A │
+│                   │                          SSR_B ── Lampu B │
+└───────────────────┼───────────────────────────────────────────┘
+                              │
+                              ▼ GND/Neutral
+┌─────────────────────────────────────────────────────────────────┐
+│                    ARUS DAYA DC                                 │
+│                                                                   │
+│   UPS AC → Power Supply 12V → Stepdown 5V → ESP32 + Sensor     │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼ WiFi (2.4GHz)
+┌─────────────────────────────────────────────────────────────────┐
 │                         CLOUD LAYER                              │
 │                     Firebase Realtime DB                         │
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────────────┐  │
@@ -41,29 +59,13 @@
 │  │  └──────────┘  └──────────┘  └──────────────────────┘   │ │
 │  │  ┌──────────┐  ┌──────────┐  ┌──────────────────────┐   │ │
 │  │  │ RTC      │  │ OLED     │  │ SSR A/B              │   │ │
-│  │  │ DS3231   │  │ SSD1306  │  │ GPIO13 (A), GPIO4(B) │   │ │
+│  │  │ DS3231   │  │ SSD1306  │  │ GPIO14 (A), GPIO13(B) │   │ │
 │  │  │ I2C      │  │ I2C      │  │ Active LOW           │   │ │
 │  │  └──────────┘  └──────────┘  └──────────────────────┘   │ │
 │  └──────────────────────────────────────────────────────────┘ │
 └─────────────────────────────────────────────────────────────────┘
                               ▲
                               │ WiFi (2.4GHz)
-                              │
-┌─────────────────────────────────────────────────────────────────┐
-│                    DEVICE LAYER                                 │
-│  ┌──────────────────┐     ┌──────────────────────┐            │
-│  │ Lampu Blok A     │     │ Lampu Blok B         │            │
-│  │ (SSR A)          │     │ (SSR B)              │            │
-│  └──────────────────┘     └──────────────────────┘            │
-│                                                                   │
-│  ┌──────────────────────────────────────────┐                   │
-│  │  PZEM-004T v3.0 × 2 (energy monitor)     │                   │
-│  │  ZMPT101B (AC voltage detection)          │                   │
-│  │  DS3231 (RTC timestamp)                   │                   │
-│  └──────────────────────────────────────────┘                   │
-└─────────────────────────────────────────────────────────────────┘
-                              ▲
-                              │ WiFi / Mobile Data
                               │
 ┌─────────────────────────────────────────────────────────────────┐
 │                    APPLICATION LAYER                             │
@@ -81,28 +83,59 @@
 
 ## 2. Komponen Sistem
 
-### 2.1 ESP32 (Microcontroller)
-- **WiFi:** Station mode + Config Portal fallback
+### 2.1 Power Supply Chain
+
+```
+AC Input
+├── PLN 220V (Live + Neutral)
+└── UPS AC Output (220V)
+         │
+         ▼
+    [Stopkontak]
+         │
+         ├── ZMPT101B (clip-on) → ESP32 ADC (deteksi PLN/UPS)
+         │
+         ├── SSR_A (Live switched) → Lampu Blok A
+         └── SSR_B (Live switched) → Lampu Blok B
+         
+    ZMPT GND ── ESP32 GND (shared reference)
+
+DC Power
+├── UPS AC → Power Supply 12V → Stepdown 5V
+│                            ├── ESP32 VIN (5V) + 3V3 (3.3V output)
+│                            ├── PZEM-A VCC (3.3V dari ESP32)
+│                            ├── PZEM-B VCC (3.3V dari ESP32)
+│                            ├── ZMPT VCC (5V)
+│                            └── Peripheral 3.3V (OLED, RTC, Buzzer) dari ESP32 3V3
+│
+3.3V rail
+├── OLED SDA/SCL (I2C, with pullup 4.7kΩ)
+├── RTC DS3231 (I2C, address 0x68)
+└── Buzzer GPIO23 (active HIGH)
+```
+
+### 2.2 ESP32 (Microcontroller)
+- **WiFi:** Station mode + Config Portal fallback (modem 4G hotspot)
 - **Firebase:** RTDB client dengan auth email/password
 - **GPIO:** SSR, buzzer, ZMPT ADC, I2C (OLED + RTC), Serial1/2 (PZEM)
 - **RTC:** DS3231 via I2C — timestamp untuk data energy offline
 
-### 2.2 Sensor Energi
+### 2.3 Sensor Energi
 | Sensor | Fungsi | Interface | Update Rate | Catatan |
 |--------|--------|-----------|-------------|---------|
-| PZEM-004T v3.0 (A) | V, I, P, E Blok A | UART (Serial2) | 1 detik | skip saat PLN mati |
-| PZEM-004T v3.0 (B) | V, I, P, E Blok B | UART (Serial1) | 1 detik | skip saat PLN mati |
+| PZEM-004T v3.0 (A) | V, I, P, E Blok A | UART (Serial2) | 2.5 detik | skip saat PLN mati, 3.3V |
+| PZEM-004T v3.0 (B) | V, I, P, E Blok B | UART (Serial1) | 2.5 detik | skip saat PLN mati, 3.3V |
 | ZMPT101B | RMS voltage, PLN/UPS | ADC GPIO34 | 100ms | 400 sampel per cycle |
 | DS3231 | Timestamp | I2C | NTP sync 1x saat boot | independent dari WiFi |
 
-### 2.3aktuator
+### 2.4 Aktuator
 | Aktuator | Pin | Fungsi |
 |----------|-----|--------|
-| SSR Blok A | GPIO13 | ON/OFF lampu Blok A (active LOW) |
-| SSR Blok B | GPIO4 | ON/OFF lampu Blok B (active LOW) |
+| SSR Blok A | GPIO14 | ON/OFF lampu Blok A (active LOW) |
+| SSR Blok B | GPIO13 | ON/OFF lampu Blok B (active LOW) |
 | Buzzer | GPIO23 | Beep toggle (200ms) + PLN alarm (500ms/3s) |
 
-### 2.4 Firebase Realtime Database
+### 2.5 Firebase Realtime Database
 ```
 /energy/block_a
   ├── voltage: float (V)
@@ -117,12 +150,12 @@
 /energy/z_mpt
   ├── pln: bool (PLN available)
   ├── voltage_raw: float (RMS ADC)
-  └── timestamp: int
+  └── timestamp: int (epoch)
 
 /energy/pln_status
   ├── available: bool
   ├── source: string ("PLN"/"UPS")
-  └── timestamp: int
+  └── timestamp: int (epoch)
 
 /lamp/control/a
   └── bool (true=ON, false=OFF)
@@ -148,7 +181,7 @@
      │               │                  │                │
      │ 1. Baca V/I/P │                  │                │
      │               │ 2. Kirim JSON   │                │
-     │               │    tiap 1 detik │                │
+     │               │    tiap 2.5 detik │              │
      │               │                  │ 3. RTDB push  │
      │               │                  │    real-time   │
      │               │                  │                │ 4. Listen
@@ -176,7 +209,7 @@
 ### 3.3 PLN Detection Flow
 
 ```
-ZMPT101B (GPIO34)
+ZMPT101B (clip-on pada stopkontak)
      │ analogRead 400 sampel (RMS)
      ▼
 readZMPT()
@@ -195,13 +228,13 @@ if (RMS > 180V threshold)
 ### 3.4 Heartbeat Flow
 
 ```
-ESP32 (tiap 1 detik)
+ESP32 (tiap 2.5 detik)
      │ kirim epoch timestamp ke /device/heartbeat
      ▼
-Mobile App (poll tiap 2 detik)
+Mobile App (poll tiap 3 detik)
      │ cek selisih timestamp sekarang vs last_heartbeat
      ▼
-if (selisih > 3 detik)
+if (selisih > 5 detik)
      │ device offline
      ▼
     Tampilkan "Offline" di UI
@@ -213,8 +246,8 @@ if (selisih > 3 detik)
 
 | Operasi | Interval | Latency | Catatan |
 |---------|----------|---------|--------|
-| PZEM read | 1 detik | 100ms (normal), 7s (timeout) | skip saat PLN mati |
-| Firebase send | 1 detik | 500ms-2s (blocking) | 6+ RTDB writes per cycle |
+| PZEM read | 2.5 detik | 100ms (normal), 7s (timeout) | skip saat PLN mati |
+| Firebase send | 2.5 detik | 500ms-2s (blocking) | 6+ RTDB writes per cycle |
 | Firebase command check | 100ms | 100-500ms | debounce 2s per lamp |
 | ZMPT read | 100ms | 30ms | 400 sampel ADC, delayMicroseconds |
 | OLED update | 1 detik | <10ms | I2C 100kHz |
@@ -226,7 +259,7 @@ if (selisih > 3 detik)
 - Worst case: 2s (Firebase lag) + 100ms = **~2.1s**
 
 **End-to-end energy data latency (Sensor → App):**
-- Best case: 1s (sensor timer) + 500ms (Firebase) = **~1.5s**
+- Best case: 2.5s (sensor timer) + 500ms (Firebase) = **~3s**
 - Worst case: 7s (PZEM timeout) + 2s = **~9s**
 
 ---
@@ -276,29 +309,119 @@ IDLE (buzzerActive=false)
     │                       ├─ PLN still off ──▶ BEEP_500
     │                       │
     │                       └─ PLN kembali ──▶ IDLE
-    │
-    └─ alarm queued ──▶ antri setelah beep aktif selesai
 ```
 
 ---
 
 ## 6. Power Management
 
-### PLN → UPS Failover
-1. ZMPT101B detects RMS drop (threshold 180V)
-2. Transisi PLN→UPS triggers `plnAlarmActive = true`
-3. Buzzer alarm beep 500ms setiap 3 detik
-4. Mobile app notifikasi via `/energy/pln_status`
-5. PZEM read skip (AC-powered, tidak ada power)
-6. WiFi + Firebase tetap hidup (via UPS/modem 4G)
+### AC Power Distribution
+
+```
+AC INPUT (220V 50Hz)
+│
+├── PLN Live ── [ZMPT101B clip-on] ── [Stopkontak] ───────────┐
+│                   │                              │            │
+│                   ├── ZMPT VCC ← 5V              │            │
+│                   ├── ZMPT GND ← ESP32 GND       │            │
+│                   └── ZMPT Output → GPIO34       │            │
+│                                                   │            │
+│   Dari stopkontak:                                │            │
+│   ├── Live ── SSR_A input ── SSR_A output ── Lampu A            │
+│   │              (Live switched)                                │
+│   │   Lampu A Neutral ── Neutral (shared)                       │
+│   │                                                            │
+│   └── Live ── SSR_B input ── SSR_B output ── Lampu B            │
+│                 (Live switched)                                 │
+│       Lampu B Neutral ── Neutral (shared)                       │
+│                                 │                               │
+├── UPS AC Live ───────────────────┘                               │
+│   (backup saat PLN mati, masuk ke stopkontak yang sama)           │
+│                                                                    │
+└── Neutral (shared) ── semua beban                                 │
+```
+
+### DC Power Distribution
+
+```
+UPS AC Output
+    │
+    ├── Adapter Cas 5V → Modem 4G Hotspot
+    │   (WiFi source selalu ON saat UPS aktif)
+    │
+    └── Power Supply 12V
+        │
+        ├── 12V rail
+        │   └── Stepdown 12V → 5V (buck converter)
+        │       ├── 5V rail
+        │       │   ├── ESP32 VIN (5V input)
+        │       │   ├── ZMPT101B VCC (5V)
+        │       │   └── 3.3V rail (dari ESP32 3V3 pin)
+        │       │           ├── PZEM-A VCC (3.3V)
+        │       │           ├── PZEM-B VCC (3.3V)
+        │       │           ├── OLED VCC
+        │       │           ├── RTC VCC
+        │       │           ├── Buzzer VCC
+        │       │           └── SSR LED+ (langsung dari GPIO)
+        │       │
+        │       └── GND rail (shared)
+        │           ├── ESP32 GND
+        │           ├── PZEM-A GND
+        │           ├── PZEM-B GND
+        │           ├── ZMPT GND
+        │           ├── OLED GND
+        │           ├── RTC GND
+        │           └── Buzzer GND
+```
 
 ### Power Budget
-- ESP32: ~240mA @ 5V (WiFi active)
-- PZEM × 2: ~50mA @ 5V
-- SSR × 2: ~20mA @ 3.3V (signal only, lampu via 220V)
-- OLED: ~10mA @ 3.3V
-- RTC: ~1mA @ 3.3V (battery backup)
-- **Total:** ~320mA @ 5V → ~1.6W
+
+| Komponen | Konsumsi | Sumber |
+|----------|----------|--------|
+| ESP32 (WiFi active) | ~240mA @ 5V | Stepdown 5V |
+| PZEM-A | ~25mA @ 3.3V | 3.3V rail |
+| PZEM-B | ~25mA @ 3.3V | 3.3V rail |
+| OLED SSD1306 | ~10mA @ 3.3V | 3.3V rail |
+| RTC DS3231 | ~1mA @ 3.3V | 3.3V rail + battery |
+| Buzzer (active) | ~30mA @ 3.3V | 3.3V rail |
+| SSR A/B (signal only) | ~20mA @ 3.3V | 3.3V rail |
+| Modem 4G | ~500mA @ 5V | Adapter cas UPS |
+| Lampu (via SSR, 220V) | ~15W @ 220V | AC PLN/UPS |
+| **Total DC** | **~850mA @ 5V** | ~4.25W |
+| **Total AC** | **~30W** (2 lampu) | PLN/UPS |
+
+### PLN → UPS Failover
+
+```
+PLN 220V ON:
+├── ZMPT101B RMS > 180V → PLN available
+├── Lampu A ON via SSR_A
+├── ESP32 powered via UPS → stepdown 5V → 3.3V
+├── Modem 4G via adapter cas 5V → UPS
+└── WiFi + Firebase tetap connect ke 4G hotspot
+
+PLN 220V OFF:
+├── ZMPT101B RMS < 180V → UPS available
+├── UPS baterai supply 220V
+├── ESP32 tetap hidup (via UPS → stepdown 5V)
+├── Modem 4G tetap hidup (via adapter cas 5V → UPS)
+├── WiFi tetap connect ke 4G hotspot
+├── Buzzer alarm beep 500ms setiap 3 detik
+├── PZEM read skip (AC-powered, tidak ada power)
+└── Firebase tetap menerima data dari ESP32
+```
+
+**Flow data saat PLN mati:**
+```
+ESP32 → WiFi 4G hotspot → Firebase → Mobile App
+         (via UPS power)
+```
+
+**Alasan PZEM skip saat PLN mati:**
+- PZEM 004T v3.0 powered langsung dari AC voltage yang diukur
+- Saat PLN mati, PZEM tidak punya power → tidak ada response
+- Modbus read timeout ~7 detik per attempt
+- Skip untuk mencegah blocking loop selama alarm buzzer aktif
 
 ---
 
@@ -322,6 +445,7 @@ IDLE (buzzerActive=false)
 | PZEM no response | NaN voltage/current | Skip read, retry next cycle |
 | ZMPT noise | P2P < 20 or RMS < 30 | Mark as UPS, skip alarm |
 | RTC battery dead | NTP fallback to compile time | Set waktu dari NTP setiap boot |
+| UPS battery low | Tidak ada deteksi | Matikan otomatis (built-in UPS) |
 
 ---
 

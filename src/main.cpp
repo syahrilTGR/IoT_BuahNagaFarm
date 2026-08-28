@@ -15,12 +15,12 @@ RTC_DS3231 rtc;
 #include "time.h"
 
 // ── Pin Definition ───────────────────────────────────────────────────────────
-static const uint8_t SSR_PIN = 13;          // D13 → SSR (Blok A)
-static const uint8_t SSR_PIN_B = 4;         // GPIO4 → SSR (Blok B), moved from 27 untuk avoid buzzer noise
+static const uint8_t SSR_PIN = 14;          // GPIO14 → SSR (Blok A)
+static const uint8_t SSR_PIN_B = 13;        // GPIO13 → SSR (Blok B)
 static const uint8_t PZEM_RX = 33;          // ESP32 RX2 ← PZEM TX
 static const uint8_t PZEM_TX = 32;          // ESP32 TX2 → PZEM RX
-static const uint8_t PZEMB_RX = 25;         // Serial1 RX ← PZEM B TX
-static const uint8_t PZEMB_TX = 26;         // Serial1 TX → PZEM B RX
+static const uint8_t PZEMB_RX = 26;         // Serial1 RX ← PZEM B RX
+static const uint8_t PZEMB_TX = 25;         // Serial1 TX → PZEM B TX
 
 // OLED I2C (default pins)
 static const uint8_t OLED_SDA = 21;
