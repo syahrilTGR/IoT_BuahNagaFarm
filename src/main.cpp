@@ -17,10 +17,10 @@ RTC_DS3231 rtc;
 // ── Pin Definition ───────────────────────────────────────────────────────────
 static const uint8_t SSR_PIN = 14;          // GPIO14 → SSR (Blok A)
 static const uint8_t SSR_PIN_B = 13;        // GPIO13 → SSR (Blok B)
-static const uint8_t PZEM_RX = 33;          // ESP32 RX2 ← PZEM TX
-static const uint8_t PZEM_TX = 32;          // ESP32 TX2 → PZEM RX
-static const uint8_t PZEMB_RX = 26;         // Serial1 RX ← PZEM B RX
-static const uint8_t PZEMB_TX = 25;         // Serial1 TX → PZEM B TX
+static const uint8_t PZEM_RX = 33;          // ESP32 RX2 ← PZEM A TX
+static const uint8_t PZEM_TX = 32;          // ESP32 TX2 → PZEM A RX
+static const uint8_t PZEMB_RX = 25;         // Serial1 RX ← PZEM B TX
+static const uint8_t PZEMB_TX = 26;         // Serial1 TX → PZEM B RX
 
 // OLED I2C (default pins)
 static const uint8_t OLED_SDA = 21;
@@ -34,7 +34,7 @@ static const uint8_t BUZZER_PIN = 27;        // GPIO27 → Buzzer (moved from 23
 
 // ZMPT101B Voltage Sensor (nilai raw ADC, tanpa kalibrasi)
 static const uint8_t ZMPT_PIN = 34;         // ADC1_CH6 (input only)
-static const float ZMPT_THRESHOLD = 180.0;  // Threshold RMS: >180 = PLN, <=180 = UPS
+static const float ZMPT_THRESHOLD = 150.0;  // Threshold RMS: <150 = UPS, >=150 = PLN
 
 // ── PZEM Objects ─────────────────────────────────────────────────────────────
 // PZEM004Tv30 constructor akan panggil Serial2.begin() otomatis
@@ -58,6 +58,7 @@ Timer timerOLED      {0, 1000};   // Update OLED tiap 1 detik
 Timer timerCheckCmd  {0, 100};    // Cek perintah Firebase tiap 100ms
 Timer timerBuzzer    {0, 0};      // Buzzer non-blocking
 Timer timerZMPT      {0, 100};    // Baca ZMPT tiap 100ms
+Timer timerResetWifi {0, 3000};   // Cek perintah reset WiFi tiap 3 detik
 
 // ── State ────────────────────────────────────────────────────────────────────
 struct EnergyData {
@@ -124,6 +125,7 @@ void printEnergyData(const EnergyData& d, const char* label);
 void buzzerOn(unsigned long durationMs);
 void readZMPT();
 void syncRTC();
+void checkWifiResetCommand();
 
 void setup() {
   Serial.begin(115200);
@@ -223,8 +225,7 @@ void loop() {
       case SYS_WIFI_PORTAL:
         Serial.println("[WiFi] Starting Config Portal (AP mode)...");
         {
-          String apName = String("SmartNaga-") + String((uint32_t)ESP.getEfuseMac(), HEX);
-          bool res = wm.startConfigPortal(apName.c_str());
+          bool res = wm.startConfigPortal("SmartNaga-AP", "smartnaga123");
           if (res) {
             wifiConnected = true;
             Serial.print("[WiFi] Connected via Portal! IP: ");
@@ -315,6 +316,12 @@ void loop() {
   if (now - timerCheckCmd.prev >= timerCheckCmd.interval) {
     timerCheckCmd.prev = now;
     checkFirebaseCommands();
+  }
+
+  // 3b. Cek perintah reset WiFi tiap 3 detik
+  if (now - timerResetWifi.prev >= timerResetWifi.interval) {
+    timerResetWifi.prev = now;
+    checkWifiResetCommand();
   }
 
   // 4. Kirim data ke Firebase tiap 1 detik
@@ -543,6 +550,33 @@ void sendToFirebase() {
 
   // Note: /lamp/status/{a,b} ditulis oleh aplikasi (updateLampControl)
   // Firmware hanya baca /lamp/control/{a,b} untuk eksekusi perintah
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// WiFi Reset Command from Mobile App (via Firebase)
+// ════════════════════════════════════════════════════════════════════════════
+void checkWifiResetCommand() {
+  if (!wifiConnected || !firebaseReady) return;
+
+  // Baca /system/reset_wifi (boolean)
+  if (Firebase.RTDB.getBool(&fbdo, "/system/reset_wifi")) {
+    if (fbdo.boolData() == true) {
+      Serial.println("[RESET] Menerima perintah Reset WiFi!");
+
+      // Kembalikan flag ke false agar tidak looping
+      Firebase.RTDB.setBool(&fbdo, "/system/reset_wifi", false);
+      delay(500);
+
+      // Hapus kredensial WiFi
+      Serial.println("[RESET] Resetting WiFi settings...");
+      wm.resetSettings();
+
+      // Restart ESP32 → masuk mode AP (SmartNaga-AP)
+      Serial.println("[RESET] Restarting ESP32...");
+      delay(500);
+      ESP.restart();
+    }
+  }
 }
 
 // ════════════════════════════════════════════════════════════════════════════
