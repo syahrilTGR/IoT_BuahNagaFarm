@@ -19,8 +19,8 @@ static const uint8_t SSR_PIN = 14;          // GPIO14 → SSR (Blok A)
 static const uint8_t SSR_PIN_B = 13;        // GPIO13 → SSR (Blok B)
 static const uint8_t PZEM_RX = 33;          // ESP32 RX2 ← PZEM A TX
 static const uint8_t PZEM_TX = 32;          // ESP32 TX2 → PZEM A RX
-static const uint8_t PZEMB_RX = 25;         // Serial1 RX ← PZEM B TX
-static const uint8_t PZEMB_TX = 26;         // Serial1 TX → PZEM B RX
+static const uint8_t PZEMB_RX = 26;         // Serial1 RX ← PZEM B TX
+static const uint8_t PZEMB_TX = 25;         // Serial1 TX → PZEM B RX
 
 // OLED I2C (default pins)
 static const uint8_t OLED_SDA = 21;
@@ -75,9 +75,7 @@ bool lampAState = false;
 bool lampBState = false;
 bool wifiConnected = false;
 bool firebaseReady = false;
-bool plnAlarmActive = false;
 bool plnPrevState = true;   // assume PLN on at boot → first UPS detection triggers alarm
-unsigned long lastPlnAlarm = 0;
 static const int SYS_WIFI_INIT = 0;
   static const int SYS_WIFI_CONNECTING = 1;
   static const int SYS_WIFI_CHECK = 2;
@@ -289,18 +287,12 @@ void loop() {
     }
   }
 
-  // 0. Buzzer + PLN alarm — PALING PERTAMA, sebelum semua blocking call
+  // 0. Buzzer OFF check — PALING PERTAMA, sebelum semua blocking call
   //   Pakai millis() langsung (bukan `now`) karena `now` bisa stale
   if (buzzerActive && (millis() - timerBuzzer.prev >= buzzerDuration)) {
     digitalWrite(BUZZER_PIN, LOW);
     buzzerActive = false;
     buzzerOffTime = millis();
-  }
-
-  // 0b. PLN alarm repeat — require 1s minimum silence after buzzer OFF
-  if (plnAlarmActive && !buzzerActive && (millis() - lastPlnAlarm >= 3000) && (millis() - buzzerOffTime >= 1000)) {
-    lastPlnAlarm = millis();
-    buzzerOn(500);
   }
 
   // 1. Baca PZEM tiap 5 detik — skip saat PLN mati (PZEM AC-powered, read akan block ~7s)
@@ -680,14 +672,11 @@ void readZMPT() {
     Serial.printf("[%lu][ZMPT] RMS:%.1f P2P:%d Base:%.1f Src:%s\n", millis()/1000, rms, peakToPeak, baseline, src);
   }
 
-  // Alarm PLN mati: transisi PLN -> UPS = beep 500ms
+  // Alarm PLN mati: transisi PLN -> UPS = beep panjang 2 detik (sekali saja)
   if (plnPrevState && !plnAvailable) {
-    plnAlarmActive = true;
-    lastPlnAlarm = millis();
-    buzzerOn(500);
+    buzzerOn(2000);
     Serial.printf("[%lu][ALARM] PLN MATI!\n", millis()/1000);
   } else if (!plnPrevState && plnAvailable) {
-    plnAlarmActive = false;
     Serial.printf("[%lu][ALARM] PLN KEMBALI\n", millis()/1000);
   }
   plnPrevState = plnAvailable;
