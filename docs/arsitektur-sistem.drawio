@@ -1,0 +1,178 @@
+<mxfile host="app.diagrams.net" modified="2026-08-19" agent="SmartNaga Architecture" version="24.0.0" type="device">
+  <diagram name="Arsitektur Sistem" id="smartnaga-arch">
+    <mxGraphModel dx="1600" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="900" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <!-- ====== AC POWER LAYER (Row 1: y=20) ====== -->
+
+        <!-- PLN 220V -->
+        <mxCell id="ac_pln" value="PLN 220V&#xa;Live + Neutral" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FF6666;fontColor=#000000;fontSize=11;fontStyle=1;strokeColor=#CC0000;strokeWidth=2;" vertex="1" parent="1">
+          <mxGeometry x="40" y="20" width="140" height="50" as="geometry" />
+        </mxCell>
+
+        <!-- ZMPT101B Clip-On -->
+        <mxCell id="zmpt" value="ZMPT101B&#xa;(Clip-On CT)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FF99CC;fontColor=#000000;fontSize=11;fontStyle=1;strokeColor=#CC6699;strokeWidth=2;" vertex="1" parent="1">
+          <mxGeometry x="230" y="20" width="140" height="50" as="geometry" />
+        </mxCell>
+
+        <!-- Stopkontak -->
+        <mxCell id="stopkontak" value="Stopkontak" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFCC66;fontColor=#000000;fontSize=11;fontStyle=1;strokeColor=#CC9933;strokeWidth=2;" vertex="1" parent="1">
+          <mxGeometry x="420" y="20" width="120" height="50" as="geometry" />
+        </mxCell>
+
+        <!-- UPS AC -->
+        <mxCell id="ups_ac" value="UPS AC&#xa;Output" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFCC66;fontColor=#000000;fontSize=11;fontStyle=1;strokeColor=#CC9933;strokeWidth=2;" vertex="1" parent="1">
+          <mxGeometry x="590" y="20" width="100" height="50" as="geometry" />
+        </mxCell>
+
+        <!-- Lampu A -->
+        <mxCell id="lampu_a" value="Lampu A" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#CCCCCC;fontColor=#000000;fontSize=11;fontStyle=1;strokeColor=#999999;strokeWidth=2;" vertex="1" parent="1">
+          <mxGeometry x="760" y="10" width="80" height="35" as="geometry" />
+        </mxCell>
+
+        <!-- Lampu B -->
+        <mxCell id="lampu_b" value="Lampu B" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#CCCCCC;fontColor=#000000;fontSize=11;fontStyle=1;strokeColor=#999999;strokeWidth=2;" vertex="1" parent="1">
+          <mxGeometry x="760" y="50" width="80" height="35" as="geometry" />
+        </mxCell>
+
+        <!-- SSR A -->
+        <mxCell id="ssr_a" value="SSR A&#xa;GPIO13" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFCC66;fontColor=#000000;fontSize=10;fontStyle=1;strokeColor=#CC9933;strokeWidth=2;" vertex="1" parent="1">
+          <mxGeometry x="700" y="10" width="50" height="35" as="geometry" />
+        </mxCell>
+
+        <!-- SSR B -->
+        <mxCell id="ssr_b" value="SSR B&#xa;GPIO4" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFCC66;fontColor=#000000;fontSize=10;fontStyle=1;strokeColor=#CC9933;strokeWidth=2;" vertex="1" parent="1">
+          <mxGeometry x="700" y="50" width="50" height="35" as="geometry" />
+        </mxCell>
+
+        <!-- AC Wires -->
+        <mxCell id="ac1" style="edgeStyle=orthogonalEdgeStyle;rounded=0;strokeColor=#CC0000;strokeWidth=3;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" source="ac_pln" target="zmpt" parent="1" />
+        <mxCell id="ac2" style="edgeStyle=orthogonalEdgeStyle;rounded=0;strokeColor=#CC0000;strokeWidth=3;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" source="zmpt" target="stopkontak" parent="1" />
+        <mxCell id="ac3" style="edgeStyle=orthogonalEdgeStyle;rounded=0;strokeColor=#CC9933;strokeWidth=3;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" source="stopkontak" target="ups_ac" parent="1" />
+        <mxCell id="ac4" style="edgeStyle=orthogonalEdgeStyle;rounded=0;strokeColor=#CC0000;strokeWidth=2;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" source="stopkontak" target="ssr_a" parent="1" />
+        <mxCell id="ac5" style="edgeStyle=orthogonalEdgeStyle;rounded=0;strokeColor=#CC0000;strokeWidth=2;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" source="ssr_a" target="lampu_a" parent="1" />
+        <mxCell id="ac6" style="edgeStyle=orthogonalEdgeStyle;rounded=0;strokeColor=#CC0000;strokeWidth=2;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" source="stopkontak" target="ssr_b" parent="1" />
+        <mxCell id="ac7" style="edgeStyle=orthogonalEdgeStyle;rounded=0;strokeColor=#CC0000;strokeWidth=2;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" source="ssr_b" target="lampu_b" parent="1" />
+
+        <!-- ====== DC POWER LAYER (Row 2: y=120) ====== -->
+
+        <!-- Adapter Cas 5V (Modem 4G) -->
+        <mxCell id="adapter_5v" value="Adapter Cas 5V&#xa;(Modem 4G)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFCC66;fontColor=#000000;fontSize=10;fontStyle=1;strokeColor=#CC9933;strokeWidth=2;" vertex="1" parent="1">
+          <mxGeometry x="590" y="110" width="100" height="40" as="geometry" />
+        </mxCell>
+
+        <!-- Power Supply 12V -->
+        <mxCell id="ps_12v" value="Power Supply&#xa;12V" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFCC66;fontColor=#000000;fontSize=10;fontStyle=1;strokeColor=#CC9933;strokeWidth=2;" vertex="1" parent="1">
+          <mxGeometry x="350" y="110" width="90" height="40" as="geometry" />
+        </mxCell>
+
+        <!-- Stepdown 5V -->
+        <mxCell id="stepdown_5v" value="Stepdown&#xa;12V → 5V" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFCC66;fontColor=#000000;fontSize=10;fontStyle=1;strokeColor=#CC9933;strokeWidth=2;" vertex="1" parent="1">
+          <mxGeometry x="200" y="110" width="90" height="40" as="geometry" />
+        </mxCell>
+
+        <!-- Modem 4G -->
+        <mxCell id="modem_4g" value="Modem 4G&#xa;Hotspot" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFCC66;fontColor=#000000;fontSize=10;fontStyle=1;strokeColor=#CC9933;strokeWidth=2;" vertex="1" parent="1">
+          <mxGeometry x="760" y="110" width="80" height="40" as="geometry" />
+        </mxCell>
+
+        <!-- DC Wires -->
+        <mxCell id="dc1" style="edgeStyle=orthogonalEdgeStyle;rounded=0;strokeColor=#CC9933;strokeWidth=2;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;" edge="1" source="ups_ac" target="adapter_5v" parent="1" />
+        <mxCell id="dc2" style="edgeStyle=orthogonalEdgeStyle;rounded=0;strokeColor=#CC9933;strokeWidth=2;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;" edge="1" source="ups_ac" target="ps_12v" parent="1" />
+        <mxCell id="dc3" style="edgeStyle=orthogonalEdgeStyle;rounded=0;strokeColor=#CC9933;strokeWidth=2;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;" edge="1" source="adapter_5v" target="modem_4g" parent="1" />
+        <mxCell id="dc4" style="edgeStyle=orthogonalEdgeStyle;rounded=0;strokeColor=#CC9933;strokeWidth=2;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;" edge="1" source="ps_12v" target="stepdown_5v" parent="1" />
+
+        <!-- ====== CONTROLLER LAYER (Row 3: y=210) ====== -->
+
+        <!-- ESP32 -->
+        <mxCell id="esp32" value="ESP32 DevKit&#xa;GPIO: 13,4,21,22,23,25,26,32,33,34&#xa;I2C: 21(SDA), 22(SCL)&#xa;Serial1: 25(RX), 26(TX)&#xa;Serial2: 33(RX), 32(TX)&#xa;ADC: 34" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#66B2FF;fontColor=#000000;fontSize=10;fontStyle=1;strokeColor=#0066CC;strokeWidth=3;" vertex="1" parent="1">
+          <mxGeometry x="120" y="210" width="320" height="100" as="geometry" />
+        </mxCell>
+
+        <!-- OLED -->
+        <mxCell id="oled" value="OLED&#xa;SSD1306&#xa;0x3C" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#99FF99;fontColor=#000000;fontSize=10;fontStyle=1;strokeColor=#66CC66;strokeWidth=2;" vertex="1" parent="1">
+          <mxGeometry x="40" y="210" width="70" height="50" as="geometry" />
+        </mxCell>
+
+        <!-- RTC -->
+        <mxCell id="rtc" value="RTC&#xa;DS3231&#xa;0x68" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#99FF99;fontColor=#000000;fontSize=10;fontStyle=1;strokeColor=#66CC66;strokeWidth=2;" vertex="1" parent="1">
+          <mxGeometry x="40" y="270" width="70" height="50" as="geometry" />
+        </mxCell>
+
+        <!-- Buzzer -->
+        <mxCell id="buzzer" value="Buzzer&#xa;GPIO23" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FF99CC;fontColor=#000000;fontSize=10;fontStyle=1;strokeColor=#CC6699;strokeWidth=2;" vertex="1" parent="1">
+          <mxGeometry x="450" y="210" width="70" height="50" as="geometry" />
+        </mxCell>
+
+        <!-- PZEM A -->
+        <mxCell id="pzem_a" value="PZEM-A&#xa;(Blok A)&#xa;Serial2&#xa;3.3V" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FF99CC;fontColor=#000000;fontSize=10;fontStyle=1;strokeColor=#CC6699;strokeWidth=2;" vertex="1" parent="1">
+          <mxGeometry x="540" y="200" width="80" height="70" as="geometry" />
+        </mxCell>
+
+        <!-- PZEM B -->
+        <mxCell id="pzem_b" value="PZEM-B&#xa;(Blok B)&#xa;Serial1&#xa;3.3V" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FF99CC;fontColor=#000000;fontSize=10;fontStyle=1;strokeColor=#CC6699;strokeWidth=2;" vertex="1" parent="1">
+          <mxGeometry x="630" y="200" width="80" height="70" as="geometry" />
+        </mxCell>
+
+        <!-- Controller Wires -->
+        <mxCell id="i2c1" value="I2C: 21/22" style="edgeStyle=orthogonalEdgeStyle;rounded=0;strokeColor=#66CC66;strokeWidth=2;exitX=0;exitY=0.3;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;fontColor=#66CC66;fontSize=8;" edge="1" source="esp32" target="oled" parent="1" />
+        <mxCell id="i2c2" value="I2C: 21/22" style="edgeStyle=orthogonalEdgeStyle;rounded=0;strokeColor=#66CC66;strokeWidth=2;exitX=0;exitY=0.7;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;fontColor=#66CC66;fontSize=8;" edge="1" source="esp32" target="rtc" parent="1" />
+        <mxCell id="gpio1" value="GPIO23" style="edgeStyle=orthogonalEdgeStyle;rounded=0;strokeColor=#CC6699;strokeWidth=2;exitX=1;exitY=0.3;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;fontColor=#CC6699;fontSize=8;" edge="1" source="esp32" target="buzzer" parent="1" />
+        <mxCell id="uart1" value="UART1&#xa;25/26" style="edgeStyle=orthogonalEdgeStyle;rounded=0;strokeColor=#CC6699;strokeWidth=2;exitX=1;exitY=0.6;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;fontColor=#CC6699;fontSize=8;" edge="1" source="esp32" target="pzem_a" parent="1" />
+        <mxCell id="uart2" value="UART2&#xa;33/32" style="edgeStyle=orthogonalEdgeStyle;rounded=0;strokeColor=#CC6699;strokeWidth=2;exitX=1;exitY=0.8;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;fontColor=#CC6699;fontSize=8;" edge="1" source="esp32" target="pzem_b" parent="1" />
+
+        <!-- ZMPT → ESP32 -->
+        <mxCell id="zmpt_out" value="GPIO34&#xa;(ADC)" style="edgeStyle=orthogonalEdgeStyle;rounded=0;strokeColor=#CC6699;strokeWidth=2;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0;entryY=0;entryDx=0;entryDy=0;dashed=1;fontColor=#CC6699;fontSize=8;" edge="1" source="zmpt" target="esp32" parent="1">
+          <Array as="points">
+            <mxPoint x="300" y="180" />
+            <mxPoint x="280" y="180" />
+          </Array>
+        </mxCell>
+
+        <!-- ====== CLOUD LAYER (Row 4: y=380) ====== -->
+
+        <!-- Firebase RTDB -->
+        <mxCell id="firebase" value="Firebase&#xa;Realtime Database" style="shape=cloud;whiteSpace=wrap;html=1;fillColor=#FFCC66;fontColor=#000000;fontSize=11;fontStyle=1;strokeColor=#CC9933;strokeWidth=2;" vertex="1" parent="1">
+          <mxGeometry x="200" y="380" width="160" height="80" as="geometry" />
+        </mxCell>
+
+        <!-- Mobile App -->
+        <mxCell id="mobile_app" value="Mobile App&#xa;(Flutter)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#CC99FF;fontColor=#000000;fontSize=11;fontStyle=1;strokeColor=#9966CC;strokeWidth=2;" vertex="1" parent="1">
+          <mxGeometry x="200" y="500" width="160" height="60" as="geometry" />
+        </mxCell>
+
+        <!-- WiFi Label -->
+        <mxCell id="wifi_label" value="WiFi (4G Hotspot)" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;fontSize=9;fontColor=#0066CC;" vertex="1" parent="1">
+          <mxGeometry x="190" y="345" width="100" height="30" as="geometry" />
+        </mxCell>
+
+        <!-- Cloud Wires -->
+        <mxCell id="wifi1" value="WiFi 4G" style="edgeStyle=orthogonalEdgeStyle;rounded=0;strokeColor=#0066CC;strokeWidth=3;dashed=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;fontColor=#0066CC;fontSize=9;" edge="1" source="esp32" target="firebase" parent="1" />
+        <mxCell id="cloud1" value="HTTPS/WebSocket" style="edgeStyle=orthogonalEdgeStyle;rounded=0;strokeColor=#0066CC;strokeWidth=3;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;fontColor=#0066CC;fontSize=9;" edge="1" source="firebase" target="mobile_app" parent="1" />
+
+        <!-- Modem 4G → ESP32 WiFi -->
+        <mxCell id="modem_wifi" value="WiFi 4G Hotspot" style="edgeStyle=orthogonalEdgeStyle;rounded=0;strokeColor=#0066CC;strokeWidth=2;dashed=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=1;entryY=0.2;entryDx=0;entryDy=0;fontColor=#0066CC;fontSize=8;" edge="1" source="modem_4g" target="esp32" parent="1" />
+
+        <!-- ====== DATA FLOW LABELS ====== -->
+
+        <!-- Energy Data Flow -->
+        <mxCell id="energy_label" value="Data Flow:&#xa;PZEM → ESP32 → Firebase → App&#xa;V/I/P/E tiap 2.5s" style="text;html=1;align=left;verticalAlign=top;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=#E6F0FF;fontSize=9;fontColor=#336699;" vertex="1" parent="1">
+          <mxGeometry x="770" y="210" width="180" height="50" as="geometry" />
+        </mxCell>
+
+        <!-- Control Flow Label -->
+        <mxCell id="control_label" value="Control Flow:&#xa;App → Firebase → ESP32 → SSR&#xa;Poll tiap 100ms" style="text;html=1;align=left;verticalAlign=top;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=#FFF0E6;fontSize=9;fontColor=#CC6600;" vertex="1" parent="1">
+          <mxGeometry x="770" y="280" width="180" height="50" as="geometry" />
+        </mxCell>
+
+        <!-- Alarm Label -->
+        <mxCell id="alarm_label" value="PLN Detection:&#xa;ZMPT RMS > 180V → PLN&#xa;Alarm: 500ms beep / 3s" style="text;html=1;align=left;verticalAlign=top;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=#FFE6E6;fontSize=9;fontColor=#CC0000;" vertex="1" parent="1">
+          <mxGeometry x="770" y="340" width="180" height="50" as="geometry" />
+        </mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
