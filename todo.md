@@ -18,7 +18,7 @@ di App
 - [x] notif lampu padam (dari ZMPT), nanti source nya berubah jadi UPS
 
 di App — PERLU DIPERBAIKI (temuan audit firmware 2026-09-25)
-- [ ] **`_zmptVoltage` sebenarnya berisi tegangan PZEM Blok A, bukan ZMPT.**
+- [x] **`_zmptVoltage` sebenarnya berisi tegangan PZEM Blok A, bukan ZMPT.**
       Di `home_screen.dart` ada DUA listener menulis ke `_zmptVoltage`:
         1. `_plnRef.child('voltage')` (L162) → `/energy/pln_status/voltage` **TIDAK ADA** → listener mati, tidak pernah fire
         2. `_energyRefA.child('voltage')` (L172) → `/energy/block_a/voltage` → ini yang jalan (PZEM, ~238V)
@@ -26,16 +26,56 @@ di App — PERLU DIPERBAIKI (temuan audit firmware 2026-09-25)
       → Hapus listener mati (L162-170), dan putuskan mau pakai yang mana:
         - **PZEM Blok A** (tegangan di sisi beban) — kalau mau tetap seperti sekarang, rename variabelnya
         - **ZMPT** (`/energy/z_mpt/voltage_real`, tegangan di jalur PLN sebelum stopkontak) — kalau mau bedakan
-- [ ] **Field baru `voltage_real`** — firmware kirim volt terkalibrasi (RMS × 0.667) ke
+- [x] **Field baru `voltage_real`** — firmware kirim volt terkalibrasi (RMS × 0.667) ke
       `/energy/z_mpt/voltage_real`. Ini satu-satunya sumber tegangan dari ZMPT.
-- [ ] **`voltage_raw` = RMS ADC mentah, BUKAN volt** — nilainya ~0-500 (contoh 356), bukan ~238.
+- [x] **`voltage_raw` = RMS ADC mentah, BUKAN volt** — nilainya ~0-500 (contoh 356), bukan ~238.
       Jangan ditampilkan sebagai volt.
-- [ ] **Heartbeat staleness tidak konsisten** — `control_screen.dart` pakai 10s, `home_screen.dart`
+- [x] **Heartbeat staleness tidak konsisten** — `control_screen.dart` pakai 10s, `home_screen.dart`
       pakai 15s. Firmware kirim tiap 2.5s. Samakan (usul 10s = 4 beat terlewat).
-- [ ] **Status PLN bisa flicker saat transisi** — firmware kirim `/energy/pln_status/available`
+- [x] **Status PLN bisa flicker saat transisi** — firmware kirim `/energy/pln_status/available`
       dari nilai INSTAN, bukan yang sudah di-debounce. Saat PLN baru mati/nyala, app bisa
       sempat menampilkan status salah ~300ms. Pertimbangkan smoothing di app (debounce 2-3s)
       atau perbaiki di firmware (pakai `plnPrevState`).
+- [x] **BUG: arus & daya stuck di nilai terakhir saat PLN mati** (dilaporkan 2026-09-25)
+      Gejala: PLN normal + lampu nyala → terukur arus & daya. Lalu PLN mati →
+      nilai arus/daya **tidak reset ke 0**, tetap menampilkan angka terakhir.
+
+      **Akar masalah ADA DI FIRMWARE, bukan app.** Alur:
+        1. `src/main.cpp:341` — `readPZEM()` di-SKIP total saat PLN mati:
+           `if (now - timerPZEM.prev >= timerPZEM.interval && plnPrevState)`
+        2. `blockA` / `blockB` jadi variabel basi (nilai terakhir sebelum PLN mati)
+        3. `sendToFirebase()` tetap kirim `blockA.power` / `blockA.current` yang basi
+           itu ke `/energy/block_{a,b}` setiap 2.5s
+        4. App menerima nilai valid → tidak ada cara tahu itu sudah tidak berlaku
+
+      **Fix firmware (pilih salah satu):**
+        - **A (disarankan):** saat PLN mati, tulis nol ke `/energy/block_{a,b}`
+          (voltage/current/power = 0), karena PZEM memang tidak bisa mengukur
+        - **B:** kirim flag `valid: false` di JSON, app yang menampilkan "—" / 0
+        - **C:** keduanya — nol-kan nilai + kirim flag
+
+      **Catatan penting:** PZEM mengukur sisi BEBAN (setelah relay). Saat PLN mati,
+      kalau lampu masih jalan dari UPS, arus sebenarnya BUKAN nol — PZEM hanya tidak
+      bisa membacanya karena VCC 3.3V brownout (lihat item hardware PZEM VCC 5V).
+      Jadi fix yang benar jangka panjang: perbaiki VCC PZEM, lalu HAPUS skip ini
+      dan ganti dengan timeout Modbus lebih pendek.
+
+      **Sisi app (SUDAH DIKERJAKAN):**
+        - `home_screen.dart:132` pakai assignment langsung → ikut nilai dari Firebase,
+          jadi otomatis benar begitu firmware kirim 0.
+        - `anomaly_listener_service.dart` sudah baca flag `valid`:
+          `final bool isValid = val['valid'] != false; if (!isValid) { _powerA = 0.0; ... }`
+
+      ⚠️ **BELUM SELESAI — firmware belum kirim flag `valid`** (dicek 2026-09-25)
+        App sudah siap menerima `valid: false` → reset ke 0. Tapi firmware
+        (`src/main.cpp`) belum mengirim field itu sama sekali, dan skip PZEM
+        (L341) masih ada. Jadi app belum bisa tahu data sudah basi.
+
+        **Yang perlu dikerjakan di firmware:**
+        1. Kirim `valid: true/false` di JSON `/energy/block_{a,b}`
+           (`valid = false` saat PLN mati / `blockX.valid == false`)
+        2. Atau pilih opsi A: tulis nol saat PLN mati
+        Tanpa ini, bug "arus & daya stuck" masih terjadi walau app sudah siap.
 
 di RTDB
 - add tugangan zmpt ke firebase
