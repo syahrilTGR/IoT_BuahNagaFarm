@@ -36,6 +36,21 @@ static const uint8_t BUZZER_PIN = 27;        // GPIO27 → Buzzer (moved from 23
 static const uint8_t ZMPT_PIN = 34;         // ADC1_CH6 (input only)
 static const float ZMPT_THRESHOLD = 150.0;  // Threshold RMS: <150 = UPS, >=150 = PLN
 
+// ── ZMPT Kalibrasi & Sampling ────────────────────────────────────────────────
+// Sampling SATU jendela (baseline + RMS dihitung dari buffer yang SAMA).
+// analogRead() ~9.5us + delay 70us = ~80us/sampel
+// 600 sampel × 80us = ~48ms = ~2.4 siklus jala-jala 50Hz.
+static const int ZMPT_SAMPLES = 600;
+static const int ZMPT_SAMPLE_DELAY_US = 70;
+
+// Debounce state PLN: butuh N pembacaan konsisten sebelum ganti state.
+static const int PLN_DEBOUNCE_READS = 3;
+
+// Faktor konversi RMS-ADC → Volt (hasil kalibrasi vs PZEM).
+// Data 10 pasang (2026-09-25): mean RMS 356.73, mean PZEM 238.07
+// → K = 238.07 / 356.73 = 0.667
+static const float ZMPT_K = 0.667;
+
 // ── PZEM Objects ─────────────────────────────────────────────────────────────
 // PZEM004Tv30 constructor akan panggil Serial2.begin() otomatis
 PZEM004Tv30 pzemA(Serial2, PZEM_RX, PZEM_TX);  // Blok A, addr default 0xF8
@@ -75,7 +90,9 @@ bool lampAState = false;
 bool lampBState = false;
 bool wifiConnected = false;
 bool firebaseReady = false;
-bool plnPrevState = true;   // assume PLN on at boot → first UPS detection triggers alarm
+bool plnPrevState = true;     // state PLN saat ini (di-debounce)
+bool plnStateInit = false;    // false = belum ada pembacaan valid (cegah alarm palsu saat boot)
+bool inConfigPortal = false;  // flag untuk indikator Config Portal di OLED
 static const int SYS_WIFI_INIT = 0;
   static const int SYS_WIFI_CONNECTING = 1;
   static const int SYS_WIFI_CHECK = 2;
@@ -98,8 +115,17 @@ bool buzzerActive = false;
 unsigned long buzzerDuration = 0;
 unsigned long buzzerOffTime = 0;  // track when buzzer last turned OFF (for alarm silence gap)
 
-// ZMPT voltage reading
-float acVoltage = 0.0;
+// ── ZMPT state ───────────────────────────────────────────────────────────────
+// Buffer 600 sampel: baseline + RMS dihitung dari jendela yang SAMA
+static int zmptBuffer[ZMPT_SAMPLES];
+
+// Debounce state PLN (butuh N pembacaan konsisten sebelum ganti state)
+static int zmptPlnReads = 0;
+static int zmptUpsReads = 0;
+
+// ZMPT voltage reading (RMS mentah + volt terkalibrasi)
+float acVoltage = 0.0;      // RMS ADC mentah (untuk threshold & Firebase voltage_raw)
+float acVoltageReal = 0.0;  // volt terkalibrasi (RMS * ZMPT_K)
 
 // ── Firebase objects ──────────────────────────────────────────────────────────────
 FirebaseData fbdo;
@@ -222,10 +248,26 @@ void loop() {
 
       case SYS_WIFI_PORTAL:
         Serial.println("[WiFi] Starting Config Portal (AP mode)...");
+        Serial.println("[WiFi] SSID: SmartNaga-AP  |  Pass: smartnaga123  |  IP: 192.168.4.1");
+        inConfigPortal = true;
         {
+          // Tampilkan indikator di OLED sebelum portal (blocking)
+          display.clearDisplay();
+          display.setTextSize(1);
+          display.setTextColor(WHITE);
+          display.setCursor(0, 0);
+          display.println("== SETUP WIFI ==");
+          display.println("");
+          display.println("1. Konek ke WiFi:");
+          display.println("   SmartNaga-AP");
+          display.println("2. Pass: smartnaga123");
+          display.println("3. Buka 192.168.4.1");
+          display.display();
+
           bool res = wm.startConfigPortal("SmartNaga-AP", "smartnaga123");
           if (res) {
             wifiConnected = true;
+            inConfigPortal = false;
             Serial.print("[WiFi] Connected via Portal! IP: ");
             Serial.println(WiFi.localIP());
             sysState = SYS_FIREBASE_INIT;
@@ -296,7 +338,7 @@ void loop() {
   }
 
   // 1. Baca PZEM tiap 5 detik — skip saat PLN mati (PZEM AC-powered, read akan block ~7s)
-  if (now - timerPZEM.prev >= timerPZEM.interval && acVoltage > ZMPT_THRESHOLD) {
+  if (now - timerPZEM.prev >= timerPZEM.interval && plnPrevState) {
     timerPZEM.prev = now;
     readPZEM();
   }
@@ -435,10 +477,15 @@ void updateOLED() {
   // Line 1: NET status (kiri) + Power source (kanan)
   display.setTextSize(1);
   display.setCursor(0, 0);
-  display.print(wifiConnected ? "NET: ONLINE" : "NET: OFFLINE");
 
-  const char* source = "UPS";
-  if (acVoltage > ZMPT_THRESHOLD) source = "PLN";
+  // Tampilkan status Config Portal jika aktif
+  if (inConfigPortal) {
+    display.print("CFG: PORTAL");
+  } else {
+    display.print(wifiConnected ? "NET: ONLINE" : "NET: OFFLINE");
+  }
+
+  const char* source = plnPrevState ? "PLN" : "UPS";
 
   // "Src: PLN" = 8 char = 48px → rata kanan di x=78
   display.setCursor(78, 0);
@@ -524,17 +571,19 @@ void sendToFirebase() {
   Firebase.RTDB.setJSON(&fbdo, "/energy/block_b", &energyJsonB);
 
   // Kirim status PLN + raw RMS ke /energy/z_mpt
+  // Pakai plnPrevState (sudah di-debounce) — bukan nilai instan, supaya
+  // app tidak flicker saat transisi PLN mati/nyala.
   FirebaseJson zMptJson;
-  zMptJson.set("pln", acVoltage > ZMPT_THRESHOLD);
-  zMptJson.set("voltage_raw", acVoltage);
+  zMptJson.set("pln", plnPrevState);
+  zMptJson.set("voltage_raw", acVoltage);        // RMS ADC mentah (0-4095)
+  zMptJson.set("voltage_real", acVoltageReal);   // volt terkalibrasi (RMS * K)
   zMptJson.set("timestamp", (double)ts);
   Firebase.RTDB.setJSON(&fbdo, "/energy/z_mpt", &zMptJson);
 
-  // Kirim status PLN terpisah untuk notifikasi Cloud Function
+  // Kirim status PLN terpisah (untuk notifikasi & status di app)
   FirebaseJson plnJson;
-  bool plnAvailable = acVoltage > ZMPT_THRESHOLD;
-  plnJson.set("available", plnAvailable);
-  plnJson.set("source", plnAvailable ? "PLN" : "UPS");
+  plnJson.set("available", plnPrevState);
+  plnJson.set("source", plnPrevState ? "PLN" : "UPS");
   plnJson.set("timestamp", (double)ts);
   Firebase.RTDB.setJSON(&fbdo, "/energy/pln_status", &plnJson);
 
@@ -556,17 +605,15 @@ void checkWifiResetCommand() {
     if (fbdo.boolData() == true) {
       Serial.println("[RESET] Menerima perintah Reset WiFi!");
 
-      // Kembalikan flag ke false agar tidak looping
+      // 1. Kembalikan flag ke false agar tidak looping setelah restart
       Firebase.RTDB.setBool(&fbdo, "/system/reset_wifi", false);
-      delay(500);
 
-      // Hapus kredensial WiFi
+      // 2. Hapus kredensial WiFi di NVS (non-blocking, aman untuk WDT)
       Serial.println("[RESET] Resetting WiFi settings...");
       wm.resetSettings();
 
-      // Restart ESP32 → masuk mode AP (SmartNaga-AP)
+      // 3. Restart ESP32 → masuk mode AP (SmartNaga-AP)
       Serial.println("[RESET] Restarting ESP32...");
-      delay(500);
       ESP.restart();
     }
   }
@@ -631,54 +678,96 @@ void readZMPT() {
     buzzerOffTime = ms;
   }
 
-  // Baca ADC untuk baseline (rata-rata DC offset)
-  long sumRaw = 0;
-  for (int i = 0; i < 200; i++) {
-    sumRaw += analogRead(ZMPT_PIN);
-    delayMicroseconds(50);
+  // ── Sampling SATU jendela ke buffer ────────────────────────────────────────
+  // Semua 600 sampel disimpan dulu, lalu baseline & RMS dihitung dari buffer
+  // yang SAMA. Ini mencegah bug baseline dari jendela lama (yang bikin RMS
+  // ngawur saat transisi PLN mati/nyala).
+  for (int i = 0; i < ZMPT_SAMPLES; i++) {
+    zmptBuffer[i] = analogRead(ZMPT_PIN);
+    delayMicroseconds(ZMPT_SAMPLE_DELAY_US);
   }
-  float baseline = sumRaw / 200.0;
 
-  // Baca ADC untuk RMS (200 samples)
-  long sum = 0;
+  // ── Baseline = rata-rata (DC offset) ───────────────────────────────────────
+  long sumRaw = 0;
   int minVal = 4095, maxVal = 0;
-  for (int i = 0; i < 200; i++) {
-    int raw = analogRead(ZMPT_PIN);
-    int offset = raw - (int)baseline;
-    sum += (long)offset * offset;
+  for (int i = 0; i < ZMPT_SAMPLES; i++) {
+    int raw = zmptBuffer[i];
+    sumRaw += raw;
     if (raw < minVal) minVal = raw;
     if (raw > maxVal) maxVal = raw;
-    delayMicroseconds(100);
   }
-  float rms = sqrt(sum / 200.0);
+  float baseline = (float)sumRaw / ZMPT_SAMPLES;
+
+  // ── RMS dari buffer yang sama ──────────────────────────────────────────────
+  long sumSqr = 0;
+  for (int i = 0; i < ZMPT_SAMPLES; i++) {
+    int offset = zmptBuffer[i] - (int)baseline;
+    sumSqr += (long)offset * offset;
+  }
+  float rms = sqrt((float)sumSqr / ZMPT_SAMPLES);
   int peakToPeak = maxVal - minVal;
 
-  // Deteksi invalid:
+  // Deteksi valid:
   // 1. RMS < 30 = noise floor (tidak ada tegangan AC)
   // 2. peak-to-peak < 20 = pin floating atau DC saja
   // 3. RMS > 500 = ADC saturate
-  bool plnAvailable = false;
+  bool plnDetected = false;
   if (rms >= 30.0 && peakToPeak >= 20 && rms <= 500.0 && rms > ZMPT_THRESHOLD) {
-    plnAvailable = true;
+    plnDetected = true;
   }
 
-  // acVoltage diisi RMS raw (tanpa kalibrasi) untuk display
-  acVoltage = (plnAvailable || rms >= 30.0) ? rms : 0.0;
+  // ── Debounce state PLN ─────────────────────────────────────────────────────
+  bool plnAvailable;
+  bool firstRead = !plnStateInit;   // simpan sebelum flag diubah
+
+  if (firstRead) {
+    // Pembacaan pertama: langsung adopsi state, TANPA alarm
+    plnAvailable = plnDetected;
+    plnStateInit = true;
+    zmptPlnReads = 0;
+    zmptUpsReads = 0;
+    Serial.printf("[%lu][ZMPT] State awal: %s\n", millis()/1000, plnAvailable ? "PLN" : "UPS");
+  } else {
+    // Akumulasi pembacaan konsisten
+    if (plnDetected) {
+      if (zmptPlnReads < PLN_DEBOUNCE_READS) zmptPlnReads++;
+      zmptUpsReads = 0;
+    } else {
+      if (zmptUpsReads < PLN_DEBOUNCE_READS) zmptUpsReads++;
+      zmptPlnReads = 0;
+    }
+    // State hanya berubah setelah debounce terpenuhi
+    plnAvailable = plnPrevState;
+    if (plnPrevState && zmptUpsReads >= PLN_DEBOUNCE_READS) {
+      plnAvailable = false;
+    } else if (!plnPrevState && zmptPlnReads >= PLN_DEBOUNCE_READS) {
+      plnAvailable = true;
+    }
+  }
+
+  // RMS mentah untuk threshold; volt terkalibrasi untuk display/Firebase
+  acVoltage     = (rms >= 30.0) ? rms : 0.0;
+  acVoltageReal = acVoltage * ZMPT_K;
 
   // Print ke Serial Monitor tiap ~5 detik (throttle)
+  // Catatan: Src menampilkan state SETELAH debounce. Saat transisi, baris ini
+  // bisa menampilkan state lama — itu normal (print di-throttle 5s, read 100ms).
   static unsigned long lastPrint = 0;
   if (millis() - lastPrint >= 5000) {
     lastPrint = millis();
     const char* src = plnAvailable ? "PLN" : "UPS";
-    Serial.printf("[%lu][ZMPT] RMS:%.1f P2P:%d Base:%.1f Src:%s\n", millis()/1000, rms, peakToPeak, baseline, src);
+    Serial.printf("[%lu][ZMPT] RMS:%.1f (%.1fV) P2P:%d Base:%.1f Src:%s\n",
+                  millis()/1000, rms, acVoltageReal, peakToPeak, baseline, src);
   }
 
-  // Alarm PLN mati: transisi PLN -> UPS = beep panjang 2 detik (sekali saja)
-  if (plnPrevState && !plnAvailable) {
-    buzzerOn(2000);
-    Serial.printf("[%lu][ALARM] PLN MATI!\n", millis()/1000);
-  } else if (!plnPrevState && plnAvailable) {
-    Serial.printf("[%lu][ALARM] PLN KEMBALI\n", millis()/1000);
+  // Alarm PLN: hanya saat TRANSISI nyata (bukan pembacaan pertama)
+  if (!firstRead) {
+    if (plnPrevState && !plnAvailable) {
+      buzzerOn(2000);
+      Serial.printf("[%lu][ALARM] PLN MATI!\n", millis()/1000);
+    } else if (!plnPrevState && plnAvailable) {
+      Serial.printf("[%lu][ALARM] PLN KEMBALI\n", millis()/1000);
+    }
   }
   plnPrevState = plnAvailable;
 }
