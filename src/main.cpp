@@ -432,15 +432,16 @@ void setLampB(bool state) {
 void updateOLED() {
   display.clearDisplay();
 
-  // Line 1: WiFi + Power source
+  // Line 1: NET status (kiri) + Power source (kanan)
   display.setTextSize(1);
   display.setCursor(0, 0);
-  display.print(wifiConnected ? "WiFi: ON" : "WiFi: --");
+  display.print(wifiConnected ? "NET: ONLINE" : "NET: OFFLINE");
 
   const char* source = "UPS";
   if (acVoltage > ZMPT_THRESHOLD) source = "PLN";
 
-  display.setCursor(70, 0);
+  // "Src: PLN" = 8 char = 48px → rata kanan di x=78
+  display.setCursor(78, 0);
   display.printf("Src:%s", source);
 
   // Line 2: Waktu (RTC)

@@ -19,6 +19,16 @@ di App
 
 di RTDB
 - add tugangan zmpt ke firebase
+
+di hardware
+- buzzer PLN mati: ganti beep-beep (500ms/3s) jadi beep panjang 2 detik di awal mati lampu aja [x]
+- PZEM VCC: 3.3V → 5V (spec PZEM-004T v3.0 = 5V, komunikasi gagal saat PLN mati)
+- PZEM AC input: pastikan dari UPS (bukan PLN) kalau mau tetap monitor saat outage
+- ZMPT potentiometer: kalibrasi ulang (putar sampai baseline ~2200 dan RMS 230+)
+- voltage_raw di Firebase: nilai RMS ADC mentah, belum dikonversi ke volt
+- tulisan src di oled, geser ke kanan, jdi tulisan ups atau PLN itu mentok ke kanan [x]
+- trus tulisan wifi: ON / OFF, ganti dengan tulisan ONLINE, OFFLINE. cek apakah cukup ruang di olednya? [x]
+
 ---
 
 ## Firmware
