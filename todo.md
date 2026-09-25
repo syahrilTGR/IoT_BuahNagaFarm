@@ -79,16 +79,14 @@ di App — PERLU DIPERBAIKI (temuan audit firmware 2026-09-25)
         - `anomaly_listener_service.dart` sudah baca flag `valid`:
           `final bool isValid = val['valid'] != false; if (!isValid) { _powerA = 0.0; ... }`
 
-      ⚠️ **BELUM SELESAI — firmware belum kirim flag `valid`** (dicek 2026-09-25)
-        App sudah siap menerima `valid: false` → reset ke 0. Tapi firmware
-        (`src/main.cpp`) belum mengirim field itu sama sekali, dan skip PZEM
-        (L341) masih ada. Jadi app belum bisa tahu data sudah basi.
-
-        **Yang perlu dikerjakan di firmware:**
-        1. Kirim `valid: true/false` di JSON `/energy/block_{a,b}`
-           (`valid = false` saat PLN mati / `blockX.valid == false`)
-        2. Atau pilih opsi A: tulis nol saat PLN mati
-        Tanpa ini, bug "arus & daya stuck" masih terjadi walau app sudah siap.
+      ✅ **SELESAI — firmware sudah kirim flag `valid`** (commit 42328cd)
+        ```cpp
+        bool validA = plnPrevState && blockA.valid;
+        bool validB = plnPrevState && blockB.valid;
+        energyJson.set("valid", validA);
+        ```
+        Build sukses (RAM 16.0%, Flash 96.8%). Perlu diuji lapangan:
+        PLN mati → arus/daya harus reset ke 0 di app.
 
 di RTDB
 - add tugangan zmpt ke firebase
