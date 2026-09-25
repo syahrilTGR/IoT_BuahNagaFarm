@@ -9,20 +9,21 @@
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                    ARUS DAYA AC                                 │
+│              ARUS DAYA AC — JALUR LAMPU (PLN saja)              │
 │                                                                   │
-│   PLN 220V ── [ZMPT101B] ── [Stopkontak] ── UPS AC Output      │
-│                  (clip-on)                         │            │
-│                   │                               │            │
-│                   │                          SSR_A ── Lampu A │
-│                   │                          SSR_B ── Lampu B │
-└───────────────────┼───────────────────────────────────────────┘
+│   PLN 220V ── [ZMPT101B] ──┬── SSR_A ── Lampu A                │
+│                 (clip-on)  │                                    │
+│                            └── SSR_B ── Lampu B                │
+│                                                                   │
+│   ⚠️ Tanpa UPS — lampu mati total saat PLN mati                 │
+└─────────────────────────────────────────────────────────────────┘
                               │
                               ▼ GND/Neutral
 ┌─────────────────────────────────────────────────────────────────┐
-│                    ARUS DAYA DC                                 │
+│           ARUS DAYA DC — JALUR KONTROL (via UPS)                │
 │                                                                   │
-│   UPS AC → Power Supply 12V → Stepdown 5V → ESP32 + Sensor     │
+│   UPS AC → PS 12V → Stepdown 5V → ESP32 + Sensor + Modem 4G    │
+│   (ESP32 & sensor tetap hidup saat PLN mati)                    │
 └─────────────────────────────────────────────────────────────────┘
                               │
                               ▼ WiFi (2.4GHz)
@@ -86,32 +87,28 @@
 ### 2.1 Power Supply Chain
 
 ```
-AC Input
+AC Input — JALUR LAMPU (langsung PLN, TANPA UPS)
 ├── PLN 220V (Live + Neutral)
+│        ├── ZMPT101B (clip-on) → ESP32 ADC (deteksi PLN ada/mati)
+│        ├── SSR_A (Live switched) → Lampu Blok A
+│        └── SSR_B (Live switched) → Lampu Blok B
+│
+│   ⚠️ Lampu mati total saat PLN mati — tidak ada backup.
+│      ZMPT GND ── ESP32 GND (shared reference)
+
+AC Input — JALUR KONTROL (via UPS)
 └── UPS AC Output (220V)
          │
          ▼
-    [Stopkontak]
-         │
-         ├── ZMPT101B (clip-on) → ESP32 ADC (deteksi PLN/UPS)
-         │
-         ├── SSR_A (Live switched) → Lampu Blok A
-         └── SSR_B (Live switched) → Lampu Blok B
-         
-    ZMPT GND ── ESP32 GND (shared reference)
+    Power Supply 12V → Stepdown 5V
+         ├── ESP32 VIN (5V) + 3V3 (3.3V output)
+         ├── PZEM-A VCC (3.3V dari ESP32)
+         ├── PZEM-B VCC (3.3V dari ESP32)
+         ├── ZMPT VCC (5V)
+         └── Peripheral 3.3V (OLED, RTC, Buzzer) dari ESP32 3V3
 
-DC Power
-├── UPS AC → Power Supply 12V → Stepdown 5V
-│                            ├── ESP32 VIN (5V) + 3V3 (3.3V output)
-│                            ├── PZEM-A VCC (3.3V dari ESP32)
-│                            ├── PZEM-B VCC (3.3V dari ESP32)
-│                            ├── ZMPT VCC (5V)
-│                            └── Peripheral 3.3V (OLED, RTC, Buzzer) dari ESP32 3V3
-│
-3.3V rail
-├── OLED SDA/SCL (I2C, with pullup 4.7kΩ)
-├── RTC DS3231 (I2C, address 0x68)
-└── Buzzer GPIO23 (active HIGH)
+    Modem 4G: Adapter cas 5V → UPS
+    UPS hanya menopang ESP32 + sensor + modem 4G.
 ```
 
 ### 2.2 ESP32 (Microcontroller)
@@ -320,25 +317,18 @@ IDLE (buzzerActive=false)
 ```
 AC INPUT (220V 50Hz)
 │
-├── PLN Live ── [ZMPT101B clip-on] ── [Stopkontak] ───────────┐
-│                   │                              │            │
-│                   ├── ZMPT VCC ← 5V              │            │
-│                   ├── ZMPT GND ← ESP32 GND       │            │
-│                   └── ZMPT Output → GPIO34       │            │
-│                                                   │            │
-│   Dari stopkontak:                                │            │
-│   ├── Live ── SSR_A input ── SSR_A output ── Lampu A            │
-│   │              (Live switched)                                │
-│   │   Lampu A Neutral ── Neutral (shared)                       │
-│   │                                                            │
-│   └── Live ── SSR_B input ── SSR_B output ── Lampu B            │
-│                 (Live switched)                                 │
-│       Lampu B Neutral ── Neutral (shared)                       │
-│                                 │                               │
-├── UPS AC Live ───────────────────┘                               │
-│   (backup saat PLN mati, masuk ke stopkontak yang sama)           │
-│                                                                    │
-└── Neutral (shared) ── semua beban                                 │
+├── JALUR LAMPU — PLN langsung, tanpa UPS
+│   ├── PLN Live ── [ZMPT101B clip-on] ──┬── SSR_A ── Lampu A
+│   │                │                   └── SSR_B ── Lampu B
+│   │                ├── ZMPT VCC ← 5V (dari stepdown)
+│   │                ├── ZMPT GND ← ESP32 GND
+│   │                └── ZMPT Output → GPIO34
+│   │
+│   └── Neutral (shared) ── semua beban
+│       ⚠️ Lampu mati total saat PLN mati
+│
+└── JALUR KONTROL — via UPS
+    └── UPS AC Output → PS 12V → Stepdown 5V → ESP32 + sensor
 ```
 
 ### DC Power Distribution
@@ -386,30 +376,41 @@ UPS AC Output
 | Buzzer (active) | ~30mA @ 3.3V | 3.3V rail |
 | SSR A/B (signal only) | ~20mA @ 3.3V | 3.3V rail |
 | Modem 4G | ~500mA @ 5V | Adapter cas UPS |
-| Lampu (via SSR, 220V) | ~15W @ 220V | AC PLN/UPS |
+| Lampu (via SSR, 220V) | ~15W @ 220V | AC PLN saja |
 | **Total DC** | **~850mA @ 5V** | ~4.25W |
-| **Total AC** | **~30W** (2 lampu) | PLN/UPS |
+| **Total AC** | **~30W** (2 lampu) | PLN saja (tanpa UPS) |
 
-### PLN → UPS Failover
+### PLN Mati — Perilaku Sistem
+
+**Penting: lampu TIDAK punya backup UPS.** Lampu terhubung langsung ke PLN
+via SSR. Saat PLN mati, lampu mati total dan tidak bisa dinyalakan dari app.
+
+Yang tetap hidup: **ESP32 + sensor + modem 4G** (ditopang UPS).
 
 ```
 PLN 220V ON:
-├── ZMPT101B RMS > 180V → PLN available
-├── Lampu A ON via SSR_A
+├── ZMPT101B RMS > 150 → PLN available
+├── Lampu A/B bisa ON via SSR (sumber: PLN)
 ├── ESP32 powered via UPS → stepdown 5V → 3.3V
 ├── Modem 4G via adapter cas 5V → UPS
-└── WiFi + Firebase tetap connect ke 4G hotspot
+└── WiFi + Firebase connect ke 4G hotspot
 
 PLN 220V OFF:
-├── ZMPT101B RMS < 180V → UPS available
-├── UPS baterai supply 220V
+├── ZMPT101B RMS < 150 → UPS state
+├── ⚠️ Lampu A/B MATI TOTAL — tidak ada backup, tidak bisa dinyalakan dari app
+├── ⚠️ PZEM tidak bisa ukur (sumber AC-nya hilang)
 ├── ESP32 tetap hidup (via UPS → stepdown 5V)
 ├── Modem 4G tetap hidup (via adapter cas 5V → UPS)
 ├── WiFi tetap connect ke 4G hotspot
-├── Buzzer alarm beep 500ms setiap 3 detik
+├── Buzzer alarm beep panjang 2 detik (sekali, saat transisi)
 ├── PZEM read skip (AC-powered, tidak ada power)
-└── Firebase tetap menerima data dari ESP32
+└── Firebase tetap menerima data dari ESP32 (status + ZMPT)
 ```
+
+**Konsekuensi untuk data energi:**
+Karena lampu mati saat PLN mati, arus & daya yang benar adalah **0**.
+Data PZEM yang terakhir terbaca (sebelum PLN mati) adalah **basi** dan harus
+dianggap tidak valid — bukan nilai yang masih berlaku.
 
 **Flow data saat PLN mati:**
 ```
@@ -418,7 +419,7 @@ ESP32 → WiFi 4G hotspot → Firebase → Mobile App
 ```
 
 **Alasan PZEM skip saat PLN mati:**
-- PZEM 004T v3.0 powered langsung dari AC voltage yang diukur
+- PZEM 004T v3.0 powered dari AC yang diukur
 - Saat PLN mati, PZEM tidak punya power → tidak ada response
 - Modbus read timeout ~7 detik per attempt
 - Skip untuk mencegah blocking loop selama alarm buzzer aktif
@@ -445,7 +446,7 @@ ESP32 → WiFi 4G hotspot → Firebase → Mobile App
 | PZEM no response | NaN voltage/current | Skip read, retry next cycle |
 | ZMPT noise | P2P < 20 or RMS < 30 | Mark as UPS, skip alarm |
 | RTC battery dead | NTP fallback to compile time | Set waktu dari NTP setiap boot |
-| UPS battery low | Tidak ada deteksi | Matikan otomatis (built-in UPS) |
+| PLN mati | ZMPT RMS < 150 | Lampu mati total (tanpa backup); ESP32 & modem tetap hidup via UPS |
 
 ---
 
