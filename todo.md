@@ -48,17 +48,30 @@ di App — PERLU DIPERBAIKI (temuan audit firmware 2026-09-25)
            itu ke `/energy/block_{a,b}` setiap 2.5s
         4. App menerima nilai valid → tidak ada cara tahu itu sudah tidak berlaku
 
-      **Fix firmware (pilih salah satu):**
-        - **A (disarankan):** saat PLN mati, tulis nol ke `/energy/block_{a,b}`
-          (voltage/current/power = 0), karena PZEM memang tidak bisa mengukur
-        - **B:** kirim flag `valid: false` di JSON, app yang menampilkan "—" / 0
-        - **C:** keduanya — nol-kan nilai + kirim flag
+      **Fix firmware — yang harus dilakukan:**
+        Kirim `valid` di JSON `/energy/block_{a,b}`:
 
-      **Catatan penting:** PZEM mengukur sisi BEBAN (setelah relay). Saat PLN mati,
-      kalau lampu masih jalan dari UPS, arus sebenarnya BUKAN nol — PZEM hanya tidak
-      bisa membacanya karena VCC 3.3V brownout (lihat item hardware PZEM VCC 5V).
-      Jadi fix yang benar jangka panjang: perbaiki VCC PZEM, lalu HAPUS skip ini
-      dan ganti dengan timeout Modbus lebih pendek.
+        ```cpp
+        // Gabung dua kondisi — JANGAN kirim blockA.valid apa adanya!
+        // Saat PLN mati, readPZEM() di-skip sehingga blockA.valid tetap
+        // bernilai true dari pembacaan terakhir (basi).
+        bool validA = plnPrevState && blockA.valid;
+        bool validB = plnPrevState && blockB.valid;
+        ```
+
+        ⚠️ Jebakan: `blockA.valid` dihitung DI DALAM `readPZEM()` (L431).
+        Karena `readPZEM()` di-skip saat PLN mati, nilai itu tidak pernah
+        diperbarui → tetap `true`. Kalau dikirim apa adanya, bug tidak
+        terselesaikan.
+
+      **Catatan penting (dikoreksi 2026-09-25):** Lampu terhubung **langsung ke PLN
+      tanpa UPS** — UPS hanya menopang ESP32 + sensor + modem 4G. Jadi saat PLN mati,
+      lampu memang mati dan arus yang benar adalah **0**. Reset ke 0 adalah perilaku
+      yang TEPAT, bukan sekadar workaround.
+
+      Jadi Opsi A sudah benar. VCC PZEM 5V (item hardware) tetap layak dikerjakan
+      untuk stabilitas komunikasi saat PLN normal, tapi tidak mengubah keputusan
+      `valid` di atas.
 
       **Sisi app (SUDAH DIKERJAKAN):**
         - `home_screen.dart:132` pakai assignment langsung → ikut nilai dari Firebase,
