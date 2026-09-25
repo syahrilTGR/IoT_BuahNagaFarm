@@ -552,12 +552,23 @@ void sendToFirebase() {
 
   unsigned long ts = getEpochSec();
 
+  // ── Status validitas data PZEM ─────────────────────────────────────────────
+  // PENTING: JANGAN kirim blockA.valid apa adanya.
+  // blockA.valid dihitung DI DALAM readPZEM(), yang di-SKIP saat PLN mati.
+  // Akibatnya saat PLN mati nilainya tetap true dari pembacaan terakhir (basi).
+  // Gabung dengan plnPrevState supaya app tahu data sudah tidak berlaku.
+  // Lampu terhubung langsung ke PLN (tanpa UPS), jadi saat PLN mati
+  // arus/daya memang 0 — app akan reset tampilan ke 0.
+  bool validA = plnPrevState && blockA.valid;
+  bool validB = plnPrevState && blockB.valid;
+
   // Kirim energy data ke /energy/block_a
   FirebaseJson energyJson;
   energyJson.set("voltage", blockA.voltage);
   energyJson.set("current", blockA.current);
   energyJson.set("power", blockA.power);
   energyJson.set("energy", blockA.energy);
+  energyJson.set("valid", validA);
   energyJson.set("timestamp", (double)ts);
   Firebase.RTDB.setJSON(&fbdo, "/energy/block_a", &energyJson);
 
@@ -567,6 +578,7 @@ void sendToFirebase() {
   energyJsonB.set("current", blockB.current);
   energyJsonB.set("power", blockB.power);
   energyJsonB.set("energy", blockB.energy);
+  energyJsonB.set("valid", validB);
   energyJsonB.set("timestamp", (double)ts);
   Firebase.RTDB.setJSON(&fbdo, "/energy/block_b", &energyJsonB);
 
