@@ -11,9 +11,9 @@
 ┌─────────────────────────────────────────────────────────────────┐
 │              ARUS DAYA AC — JALUR LAMPU (PLN saja)              │
 │                                                                   │
-│   PLN 220V ── [ZMPT101B] ──┬── SSR_A ── Lampu A                │
+│   PLN 220V ── [ZMPT101B] ──┬── Relay_A ── Lampu A                │
 │                 (clip-on)  │                                    │
-│                            └── SSR_B ── Lampu B                │
+│                            └── Relay_B ── Lampu B                │
 │                                                                   │
 │   ⚠️ Tanpa UPS — lampu mati total saat PLN mati                 │
 └─────────────────────────────────────────────────────────────────┘
@@ -55,14 +55,18 @@
 │  │                    ESP32 DevKit                            │ │
 │  │  ┌──────────┐  ┌──────────┐  ┌──────────────────────┐   │ │
 │  │  │ WiFi     │  │ Firebase │  │ Buzzer               │   │ │
-│  │  │ Manager  │◄─│ Client   │  │ GPIO23               │   │ │
+│  │  │ Manager  │◄─│ Client   │  │ GPIO27               │   │ │
 │  │  │ (STA/AP) │  │ (RTDB)   │  │ PLN alarm            │   │ │
+│  │  │          │  │          │  │ (dari GPIO23)        │   │ │
+│  │  │ Ping     │  │ Decision │  │                      │   │ │
+│  │  │ 8.8.8.8  │  │ Tree     │  │                      │   │ │
 │  │  └──────────┘  └──────────┘  └──────────────────────┘   │ │
 │  │  ┌──────────┐  ┌──────────┐  ┌──────────────────────┐   │ │
-│  │  │ RTC      │  │ OLED     │  │ SSR A/B              │   │ │
+│  │  │ RTC      │  │ OLED     │  │ Relay A/B            │   │ │
 │  │  │ DS3231   │  │ SSD1306  │  │ GPIO14 (A), GPIO13(B) │   │ │
 │  │  │ I2C      │  │ I2C      │  │ Active LOW           │   │ │
-│  │  └──────────┘  └──────────┘  └──────────────────────┘   │ │
+│  │  │          │  │ 128×64   │  │ (NO, active LOW)      │   │ │
+│  │  └──────────┘  └────────__┘  └──────────────────────┘   │ │
 │  └──────────────────────────────────────────────────────────┘ │
 └─────────────────────────────────────────────────────────────────┘
                               ▲
@@ -90,8 +94,8 @@
 AC Input — JALUR LAMPU (langsung PLN, TANPA UPS)
 ├── PLN 220V (Live + Neutral)
 │        ├── ZMPT101B (clip-on) → ESP32 ADC (deteksi PLN ada/mati)
-│        ├── SSR_A (Live switched) → Lampu Blok A
-│        └── SSR_B (Live switched) → Lampu Blok B
+│        ├── Relay_A (Live switched) → Lampu Blok A
+│        └── Relay_B (Live switched) → Lampu Blok B
 │
 │   ⚠️ Lampu mati total saat PLN mati — tidak ada backup.
 │      ZMPT GND ── ESP32 GND (shared reference)
@@ -112,25 +116,27 @@ AC Input — JALUR KONTROL (via UPS)
 ```
 
 ### 2.2 ESP32 (Microcontroller)
-- **WiFi:** Station mode + Config Portal fallback (modem 4G hotspot)
+- **WiFi:** Station mode + Config Portal fallback (modem 4G hotspot); SSID dikirim ke `/device/ping`
 - **Firebase:** RTDB client dengan auth email/password
-- **GPIO:** SSR, buzzer, ZMPT ADC, I2C (OLED + RTC), Serial1/2 (PZEM)
+- **GPIO:** Relay, buzzer, ZMPT ADC, I2C (OLED + RTC), Serial1/2 (PZEM)
 - **RTC:** DS3231 via I2C — timestamp untuk data energy offline
+- **Decision tree:** 10-status dievaluasi lokal tiap 1 detik (lihat §4.1)
+- **Ping:** 8.8.8.8 tiap 3 detik via ESP-IDF `esp_ping` (non-blocking)
 
 ### 2.3 Sensor Energi
 | Sensor | Fungsi | Interface | Update Rate | Catatan |
 |--------|--------|-----------|-------------|---------|
 | PZEM-004T v3.0 (A) | V, I, P, E Blok A | UART (Serial2) | 2.5 detik | skip saat PLN mati, 3.3V |
 | PZEM-004T v3.0 (B) | V, I, P, E Blok B | UART (Serial1) | 2.5 detik | skip saat PLN mati, 3.3V |
-| ZMPT101B | RMS voltage, PLN/UPS | ADC GPIO34 | 100ms | 400 sampel per cycle |
+| ZMPT101B | RMS voltage, PLN/UPS | ADC GPIO34 | 100ms | 600 sampel per cycle |
 | DS3231 | Timestamp | I2C | NTP sync 1x saat boot | independent dari WiFi |
 
 ### 2.4 Aktuator
 | Aktuator | Pin | Fungsi |
 |----------|-----|--------|
-| SSR Blok A | GPIO14 | ON/OFF lampu Blok A (active LOW) |
-| SSR Blok B | GPIO13 | ON/OFF lampu Blok B (active LOW) |
-| Buzzer | GPIO23 | Beep toggle (200ms) + PLN alarm (500ms/3s) |
+| Relay Blok A | GPIO14 | ON/OFF lampu Blok A (active LOW) |
+| Relay Blok B | GPIO13 | ON/OFF lampu Blok B (active LOW) |
+| Buzzer | GPIO27 | Beep toggle (200ms) + PLN alarm (500ms/3s) |
 
 ### 2.5 Firebase Realtime Database
 ```
@@ -167,7 +173,16 @@ AC Input — JALUR KONTROL (via UPS)
 /device/ping
   ├── online: bool (ping 8.8.8.8 berhasil)
   ├── latency_ms: int (waktu round-trip)
+  ├── ssid: string (SSID WiFi yang tersambung)
   └── timestamp: int (epoch)
+
+/config/block_a                  ← APP tulis, FIRMWARE baca
+  ├── expected_power: int (W)    — daya normal yang diharapkan
+  ├── lamp_count: int            — jumlah bohlam terpasang
+  └── tolerance_percent: int     — toleransi fluktuasi (default 15)
+
+/config/block_b
+  └── (sama seperti block_a)
 
 /system/reset_wifi
   └── bool (true = perintah reset WiFi dari app)
@@ -200,7 +215,7 @@ Termasuk: energy (PZEM A/B), ZMPT, PLN status, heartbeat, **ping (8.8.8.8)**.
 
 ```
 ┌──────────┐    ┌──────────┐    ┌───────────┐    ┌──────────┐
-│  Mobile  │───▶│ Firebase │───▶│  ESP32    │───▶│   SSR    │
+│  Mobile  │───▶│ Firebase │───▶│  ESP32    │───▶│  Relay   │
 │   App    │    │   RTDB   │    │ (polling) │    │  ON/OFF  │
 └──────────┘    └──────────┘    └───────────┘    └──────────┘
      │               │                  │                │
@@ -210,7 +225,7 @@ Termasuk: energy (PZEM A/B), ZMPT, PLN status, heartbeat, **ping (8.8.8.8)**.
      │               │                  │ 3. Cek tiap    │
      │               │                  │    100ms        │
      │               │                  │                │ 4. GPIO write
-     │               │                  │                │    SSR ON/OFF
+     │               │                  │                │    Relay ON/OFF
      │               │                  │                │ 5. Buzzer beep
 ```
 
@@ -218,7 +233,7 @@ Termasuk: energy (PZEM A/B), ZMPT, PLN status, heartbeat, **ping (8.8.8.8)**.
 
 ```
 ZMPT101B (clip-on pada stopkontak)
-     │ analogRead 400 sampel (RMS)
+     │ analogRead 600 sampel (RMS)
      ▼
 readZMPT()
      │ hitung RMS, peak-to-peak, baseline
@@ -263,6 +278,18 @@ if (selisih > 5 detik)
 | PLN detection | 100ms | real-time | threshold 150V RMS |
 | **Ping 8.8.8.8** | **3 detik** | **~20-200ms** | **non-blocking (esp_ping task)** |
 
+| Operasi | Interval | Latency | Catatan |
+|---------|----------|---------|--------|
+| PZEM read | 2.5 detik | 100ms (normal), 7s (timeout) | skip saat PLN mati |
+| Firebase send | 2.5 detik | 500ms-2s (blocking) | 7+ RTDB writes per cycle |
+| Firebase command check | 100ms | 100-500ms | debounce 2s per lamp |
+| ZMPT read | 100ms | 30ms | 600 sampel ADC, delayMicroseconds |
+| OLED update | 1 detik | <10ms | I2C 100kHz |
+| Buzzer toggle | on-demand | 200ms (toggle), 2000ms (alarm) | millis() safety net |
+| PLN detection | 100ms | real-time | threshold 150V RMS |
+| **Ping 8.8.8.8** | **3 detik** | **~20-200ms** | **non-blocking (esp_ping task)** |
+| **Config read** | **10 detik** | **~100-300ms** | **one-shot boot + periodik, retain on fail** |
+
 **End-to-end control latency (App → Lamp):**
 - Best case: 100ms (command poll) + 500ms (Firebase write) = **~600ms**
 - Worst case: 2s (Firebase lag) + 100ms = **~2.1s**
@@ -272,6 +299,33 @@ if (selisih > 5 detik)
 - Worst case: 7s (PZEM timeout) + 2s = **~9s**
 
 ---
+
+## 4.1 Decision Tree di Firmware (NEW)
+
+Firmware mengeksekusi decision tree 10-status secara lokal (port presisi dari app):
+
+| Node | Kondisi | Status | Alert |
+|------|---------|--------|-------|
+| 1 | `!sensorOk` | `sensorError` | Ya |
+| 2 | `!relayOn` & `power>2.0W\|\|current>0.05A` | `relayLeakage` | Ya |
+| 2b | `!relayOn` & else | `normalStandby` | Tidak |
+| 3 | `voltage<50V` | `plnOutage` | Ya |
+| 3b | `voltage<190V` | `underVoltage` | Ya |
+| 3c | `voltage>245V` | `overVoltage` | Ya |
+| 4 | `expectedPower<=0` & `power<2.0W` | `circuitBroken` | Ya |
+| 4b | `expectedPower<=0` & else | `normalActive` | Tidak |
+| 4c | `power < powerPerLamp*0.3` | `circuitBroken` | Ya |
+| 4d | `power in [lower, upper]` | `normalActive` | Tidak |
+| 4e | `power < lower` | `partialLampFail` | Ya |
+| 4f | else | `overload` | Ya |
+
+**Threshold identik app:** leak 2.0W/0.05A, PLN 50V, under 190V, over 245V, broken 2.0W/0.3x, ppl 9.0W, tol 15% default.
+
+**Config dari Firebase:** `expected_power`, `lamp_count`, `tolerance_percent` (default 15%). Baca one-shot boot + tiap 10 detik, gagal → retain last good.
+
+**OLED label:** `partialLampFail` → `Rusak (N)` dengan `brokenLamps = clamp(1..lampCount)`.
+
+**Freshness gate:** `lastGoodMs` di `readPZEM()`, `usable = plnPrevState && valid && fresh (10s)`, `sensorOk = inGrace || !plnPrevState || (valid && fresh)`.
 
 ## 5. State Management
 
@@ -330,8 +384,8 @@ IDLE (buzzerActive=false)
 AC INPUT (220V 50Hz)
 │
 ├── JALUR LAMPU — PLN langsung, tanpa UPS
-│   ├── PLN Live ── [ZMPT101B clip-on] ──┬── SSR_A ── Lampu A
-│   │                │                   └── SSR_B ── Lampu B
+│   ├── PLN Live ── [ZMPT101B clip-on] ──┬── Relay_A ── Lampu A
+│   │                │                   └── Relay_B ── Lampu B
 │   │                ├── ZMPT VCC ← 5V (dari stepdown)
 │   │                ├── ZMPT GND ← ESP32 GND
 │   │                └── ZMPT Output → GPIO34
@@ -364,7 +418,7 @@ UPS AC Output
         │       │           ├── OLED VCC
         │       │           ├── RTC VCC
         │       │           ├── Buzzer VCC
-        │       │           └── SSR LED+ (langsung dari GPIO)
+        │       │           └── Relay VCC (dari 3.3V rail)
         │       │
         │       └── GND rail (shared)
         │           ├── ESP32 GND
@@ -386,16 +440,16 @@ UPS AC Output
 | OLED SSD1306 | ~10mA @ 3.3V | 3.3V rail |
 | RTC DS3231 | ~1mA @ 3.3V | 3.3V rail + battery |
 | Buzzer (active) | ~30mA @ 3.3V | 3.3V rail |
-| SSR A/B (signal only) | ~20mA @ 3.3V | 3.3V rail |
+| Relay A/B (signal only) | ~20mA @ 3.3V | 3.3V rail |
 | Modem 4G | ~500mA @ 5V | Adapter cas UPS |
-| Lampu (via SSR, 220V) | ~15W @ 220V | AC PLN saja |
+| Lampu (via Relay, 220V) | ~15W @ 220V | AC PLN saja |
 | **Total DC** | **~850mA @ 5V** | ~4.25W |
 | **Total AC** | **~30W** (2 lampu) | PLN saja (tanpa UPS) |
 
 ### PLN Mati — Perilaku Sistem
 
 **Penting: lampu TIDAK punya backup UPS.** Lampu terhubung langsung ke PLN
-via SSR. Saat PLN mati, lampu mati total dan tidak bisa dinyalakan dari app.
+via Relay. Saat PLN mati, lampu mati total dan tidak bisa dinyalakan dari app.
 
 Yang tetap hidup: **ESP32 + sensor + modem 4G** (ditopang UPS).
 
@@ -456,9 +510,12 @@ ESP32 → WiFi 4G hotspot → Firebase → Mobile App
 | WiFi disconnect | `WiFi.status() != WL_CONNECTED` | Auto reconnect, Config Portal fallback |
 | Firebase timeout | 20s `SYS_FIREBASE_CHECK` | Retry later, limited mode |
 | PZEM no response | NaN voltage/current | Skip read, retry next cycle |
+| **PZEM data basi** | `millis()-lastGoodMs > 10s` | `usable=false` → daya tampil 0W, status `sensorError` |
 | ZMPT noise | P2P < 20 or RMS < 30 | Mark as UPS, skip alarm |
 | RTC battery dead | NTP fallback to compile time | Set waktu dari NTP setiap boot |
 | PLN mati | ZMPT RMS < 150 | Lampu mati total (tanpa backup); ESP32 & modem tetap hidup via UPS |
+| **Config Firebase absen** | `getJSON()` gagal | Retain config terakhir; kalau belum pernah ada → default (expected 0, tol 15%) |
+| **Relay glitch saat boot** | — | `digitalWrite(HIGH)` sebelum `pinMode(OUTPUT)`; pull-up 10kΩ opsional di hardware |
 
 ---
 
@@ -471,8 +528,13 @@ PlatformIO (ESP32):
   - Firebase Arduino Client @ 4.4.17
   - Adafruit SSD1306 @ 2.5.17
   - Adafruit RTClib @ 2.1.4
-  - ArduinoJson @ 7.4.3
+  - ArduinoJson @ 7.4.3   (declared; TIDAK ter-link — 0 symbols)
+  - ESP-IDF esp_ping      (built-in, untuk ping 8.8.8.8)
 ```
+
+**Catatan flash:** Flash terpakai ~97.4% (1.28 MB / 1.31 MB). Config parsing
+pakai `FirebaseJson` yang sudah ter-link (91 symbols) — **bukan** ArduinoJson
+(0 symbols; menambahnya butuh 30-50 KB dan akan overflow).
 
 ---
 
@@ -483,3 +545,5 @@ PlatformIO (ESP32):
 3. **Energy logging** — Firestore untuk historical data (bukan cuma RTDB)
 4. **Scheduler** — on/off otomatis berdasarkan waktu RTC
 5. **Multi-tenant** — support lebih dari 1 device per Firebase project
+6. **Push notification 24/7** — saat ini notifikasi hanya jalan saat app dibuka (butuh FCM/APNs)
+7. **Publish status diagnosa ke RTDB** — butuh team consensus + update `FIREBASE_RULES.md`

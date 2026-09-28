@@ -90,7 +90,7 @@ di App — PERLU DIPERBAIKI (temuan audit firmware 2026-09-25)
 
 di RTDB
 - add tugangan zmpt ke firebase
-- [/device/ping] tambah node ping: online (bool), latency_ms (int), timestamp (int) — [x] firmware sudah kirim
+- [/device/ping] tambah node ping: online (bool), latency_ms (int), timestamp (int), **ssid (string)** — [x] firmware sudah kirim
 
 di hardware
 - buzzer PLN mati: ganti beep-beep (500ms/3s) jadi beep panjang 2 detik di awal mati lampu aja [x]
@@ -104,11 +104,10 @@ di hardware
 
 di OLED (permintaan Pak Amin Rodhi, 2026-09-28)
 - [x] Ping 8.8.8.8 tiap 3 detik → tampil "Wifi: online XXms" / "Wifi: offline"
-- [x] Layout 5 baris: Waktu (size 2, tengah) / Wifi+ping / Source / Blok A: daya + ON-OFF / Blok B: daya + ON-OFF
+- [x] Layout 7 baris: Waktu / Wifi+ping / Source / Blok A: daya / Status / Blok B: daya / Status
 - [x] "Status" di Blok A/B = nilai daya (W) + status perintah SSR (ON/OFF)
-- Catatan: Adafruit_GFX hanya punya size 1 & 2 — size 1 sudah minimum.
-      Permintaan "font status lebih kecil" diwujudkan dengan waktu size 2 (paling besar),
-      baris lain size 1.
+- [x] Status label: `Rusak (N)` dengan `brokenLamps` (clamp 1..lampCount)
+- [x] Font: size 1 untuk semua baris, waktu size 2 (paling besar di baris 1)
 - [DICOBA, DIBATALKAN] Font FreeSans9pt7b (14px) sempat dicoba, tapi hasilnya
       kurang bagus — user revert ke size 1/2 built-in. Alasan teknis: font
       proportional hanya muat 4 baris, dan setCursor jadi baseline (bukan top-left)
@@ -118,12 +117,24 @@ di OLED (permintaan Pak Amin Rodhi, 2026-09-28)
 
 ## Firmware
 - [x] PZEM B baca data
-- [x] SSR B pin dipindah ke GPIO27
+- [x] SSR B pin dipindah ke GPIO27 (sekarang relay biasa 2-channel active LOW)
 - [x] Timestamp pakai NTP epoch seconds
 - [x] Firmware hanya tulis `/energy/block_{a,b}`, app handle `/lamp/status/{a,b}`
 - [x] Debounce Firebase command (2s) cegah flicker saat SSL reconnect
 - [x] Boot: semua lamp OFF, baca status dari RTDB setelah connect
 - [x] Lamp B bisa dikontrol dari app (sudah di code, perlu test)
+- [x] Decision tree 10-status di firmware (port presisi dari app)
+- [x] Threshold identik app: leak 2.0W/0.05A, PLN 50V, under 190V, over 245V, broken 2.0W/0.3x, ppl 9.0W, tol 15%
+- [x] Freshness gate: lastGoodMs + usable gate (10s)
+- [x] sensorOk synthesis: inGrace || !plnPrevState || (valid && fresh)
+- [x] Config dari Firebase: expected_power, lamp_count, tolerance_percent
+- [x] Config polling: 5 menit → 10 detik (timerConfig)
+- [x] Settling 4 detik post-toggle
+- [x] OLED 7-label: `Rusak (N)` dengan brokenLamps clamp 1..lampCount
+- [x] Relay boot glitch fix: digitalWrite(HIGH) SEBELUM pinMode(OUTPUT)
+- [x] SSID ke Firebase: /device/ping.ssid
+
+---
 
 ## App (SmartNaga)
 - [x] Align timestamp: firmware pakai epoch seconds → app parse `DateTime.fromMillisecondsSinceEpoch(timestamp * 1000)`
