@@ -78,6 +78,7 @@ Timer timerBuzzer    {0, 0};      // Buzzer non-blocking
 Timer timerZMPT      {0, 100};    // Baca ZMPT tiap 100ms
 Timer timerResetWifi {0, 3000};   // Cek perintah reset WiFi tiap 3 detik
 Timer timerPing      {0, 3000};   // Ping 8.8.8.8 tiap 3 detik
+Timer timerConfig    {0, 10000};  // Baca /config/block_{a,b} tiap 10 detik
 
 // ── State ────────────────────────────────────────────────────────────────────
 struct EnergyData {
@@ -86,10 +87,50 @@ struct EnergyData {
   float power = 0;
   float energy = 0;
   bool valid = false;
+  unsigned long lastGoodMs = 0;  // millis() saat pembacaan valid terakhir (freshness gate)
+};
+
+// ── Config dari Firebase (/config/block_{a,b}) ───────────────────────────────
+// Dipakai decision tree. Ditulis app (AnomalyConfigScreen), firmware hanya baca.
+// Default mengikuti app: expected 0 (= belum dikonfigurasi), lampCount 0, tol 15%.
+struct LampConfig {
+  float expectedPower = 0.0f;
+  int lampCount = 0;
+  float tolerancePercent = 15.0f;
+  bool loaded = false;          // pernah berhasil baca dari Firebase
+  unsigned long lastReadMs = 0;
+};
+
+// ── Status diagnosa lampu (port dari LampDiagnosticStatus app) ───────────────
+// Urutan enum tidak penting; yang penting PRECEDENCE di evaluateLampStatusFw().
+enum class LampStatusFw : uint8_t {
+  FW_SENSOR_ERROR,
+  FW_PLN_OUTAGE,
+  FW_UNDER_VOLTAGE,
+  FW_OVER_VOLTAGE,
+  FW_NORMAL_STANDBY,
+  FW_NORMAL_ACTIVE,
+  FW_CIRCUIT_BROKEN,
+  FW_PARTIAL_LAMP_FAIL,
+  FW_OVERLOAD,
+  FW_RELAY_LEAKAGE
+};
+
+struct LampDiag {
+  LampStatusFw status = LampStatusFw::FW_NORMAL_STANDBY;
+  int brokenLamps = 0;
+  bool isAlert = false;
+  bool settling = false;
 };
 
 EnergyData blockA;
 EnergyData blockB;
+LampConfig configA;
+LampConfig configB;
+LampDiag diagA;
+LampDiag diagB;
+unsigned long lampToggleMsA = 0;  // waktu toggle terakhir (untuk settling 4s)
+unsigned long lampToggleMsB = 0;
 bool lampAState = false;
 bool lampBState = false;
 bool wifiConnected = false;
@@ -160,17 +201,24 @@ void readZMPT();
 void syncRTC();
 void checkWifiResetCommand();
 void pingGoogle();
+void readConfigOnce(const char* path, LampConfig& cfg);
+void updateDiagnostics();
+LampStatusFw evaluateLampStatusFw(bool relayOn, float voltage, float current, float power, const LampConfig& cfg, bool sensorOk);
+const char* lampStatusName(LampStatusFw s);
+const char* lampStatusShortLabel(LampStatusFw s);
 
 void setup() {
   Serial.begin(115200);
   delay(100);
   Serial.println("\n=== SmartNaga ESP32 Boot ===");
 
-  // SSR pin
+  // SSR pin — active LOW: LOW = ON, HIGH = OFF
+  // Set HIGH dulu (selagi INPUT) agar saat pinMode(OUTPUT) pin TIDAK glitch LOW
+  digitalWrite(SSR_PIN, HIGH);   // HIGH = OFF (active LOW)
   pinMode(SSR_PIN, OUTPUT);
-  digitalWrite(SSR_PIN, LOW);  // Default OFF
+
+  digitalWrite(SSR_PIN_B, HIGH);
   pinMode(SSR_PIN_B, OUTPUT);
-  digitalWrite(SSR_PIN_B, LOW);
 
   // Tombol toggle lampu (INPUT_PULLUP, tombol ke GND)
   // LED builtin sebagai indikator (active LOW)
@@ -392,6 +440,24 @@ void loop() {
     pingGoogle();
   }
 
+  // 8. Baca config decision tree dari Firebase
+  //    One-shot saat Firebase pertama siap (jangan tunggu 5 menit), lalu periodik.
+  //    timerConfig.prev di-set SEBELUM read supaya read yang lambat tidak
+  //    memicu ulang di iterasi berikutnya.
+  if (firebaseReady) {
+    static bool configBootRead = false;
+    if (!configBootRead) {
+      configBootRead = true;
+      timerConfig.prev = now;
+      readConfigOnce("/config/block_a", configA);
+      readConfigOnce("/config/block_b", configB);
+    } else if (now - timerConfig.prev >= timerConfig.interval) {
+      timerConfig.prev = now;
+      readConfigOnce("/config/block_a", configA);
+      readConfigOnce("/config/block_b", configB);
+    }
+  }
+
   // Watchdog / keep WiFi alive
   if (WiFi.status() != WL_CONNECTED) {
     wifiConnected = false;
@@ -431,6 +497,8 @@ void readPZEM() {
   blockB.power   = pzemB.power();
   blockB.energy  = pzemB.energy();
   blockB.valid = !isnan(blockB.voltage) && !isnan(blockB.current);
+  // Freshness: catat waktu pembacaan valid — HANYA di sini, tidak di tempat lain.
+  if (blockB.valid) blockB.lastGoodMs = millis();
 
   if (blockB.valid) {
     printEnergyData(blockB, "Blok B");
@@ -445,6 +513,7 @@ void readPZEM() {
 
   // Validasi per-field (seperti contoh mandulaj)
   blockA.valid = !isnan(blockA.voltage) && !isnan(blockA.current);
+  if (blockA.valid) blockA.lastGoodMs = millis();
 
   if (blockA.valid) {
     printEnergyData(blockA, "Blok A");
@@ -474,6 +543,7 @@ void setLampA(bool state) {
   lampAState = state;
   controlSSR();
   buzzerOn(200);
+  lampToggleMsA = millis();  // catat waktu toggle untuk settling 4 detik
   Serial.printf("[SSR] Lampu Blok A: %s\n", state ? "ON" : "OFF");
 }
 
@@ -481,29 +551,259 @@ void setLampB(bool state) {
   lampBState = state;
   controlSSRB();
   buzzerOn(200);
+  lampToggleMsB = millis();  // catat waktu toggle untuk settling 4 detik
   Serial.printf("[SSR] Lampu Blok B: %s\n", state ? "ON" : "OFF");
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-// Status lampu untuk OLED — mengikuti taksonomi app (LampDiagnosticStatus):
-// Standby / Normal / Gangguan.
+// Decision Tree lampu — PORT PRESISI dari app (LampDiagnosticStatus)
 //
-// Firmware tidak punya `expectedPower` (daya harapan dari pengaturan app),
-// jadi hanya 3 keadaan ini yang bisa dievaluasi lokal:
-//   Standby  : perintah OFF dan tidak ada beban
-//   Normal   : perintah ON  dan ada beban
-//   Gangguan : perintah ON  tapi tanpa beban (PLN mati / jalur putus),
-//              atau perintah OFF tapi masih ada beban (relay bocor)
+// Sumber kebenaran logika: smartnaga_app/lib/core/algorithms/decision_tree_evaluator.dart
+// Threshold di bawah HARUS identik dengan app. Kalau salah satu diubah, ubah
+// di KEDUA repo dalam satu commit — kalau tidak, OLED dan app bisa beda label.
 //
-// Ambang beban 5W: lampu ~15W (lihat docs/arsitektur), cukup untuk memisahkan
-// "tidak ada beban" dari "ada beban" tanpa terpengaruh noise PZEM.
+// Kenapa di firmware: app tidak jalan saat ditutup, sedangkan OLED harus
+// selalu benar. Firmware = satu-satunya aktor yang selalu hidup.
 // ════════════════════════════════════════════════════════════════════════════
-static const float STATUS_POWER_MIN_W = 5.0;
 
-const char* lampStatusLabel(bool commanded, float power) {
-  bool hasLoad = power >= STATUS_POWER_MIN_W;
-  if (commanded == hasLoad) return commanded ? "Normal" : "Standby";
-  return "Gangguan";
+// ── Threshold (identik dengan decision_tree_evaluator.dart) ─────────────────
+static const float LEAK_POWER_W        = 2.0f;    // relayLeakage: daya
+static const float LEAK_CURRENT_A      = 0.05f;   // relayLeakage: arus
+static const float PLN_OUTAGE_V        = 50.0f;   // plnOutage
+static const float UNDER_VOLTAGE_V     = 190.0f;  // underVoltage
+static const float OVER_VOLTAGE_V      = 245.0f;  // overVoltage
+static const float NO_CONFIG_MIN_W     = 2.0f;    // circuitBroken saat expected<=0
+static const float DEFAULT_PPL_W       = 9.0f;    // daya per lamp fallback
+static const float BROKEN_FRACTION     = 0.3f;    // circuitBroken saat expected>0
+static const float TOLERANCE_DEFAULT   = 15.0f;   // % toleransi
+
+// Freshness: pembacaan dianggap basi setelah 4 siklus PZEM terlewat (2.5s × 4).
+// readPZEM() di-SKIP saat PLN mati, jadi blockX.valid tetap true dari bacaan
+// terakhir — tanpa gate ini, daya basi bisa tampil sebagai fresh.
+static const unsigned long ENERGY_STALE_MS = 10000;
+
+// Settling setelah toggle relay: PZEM baru update tiap 2.5s, jadi nilai tepat
+// setelah toggle belum mencerminkan kondisi baru. Tahan evaluasi 4 detik.
+static const unsigned long TOGGLE_SETTLING_MS = 4000;
+
+// Grace period setelah boot: sensor belum tentu siap, jangan langsung
+// laporkan sensorError.
+static const unsigned long SENSOR_GRACE_MS = 10000;
+
+// ── Config dari Firebase ────────────────────────────────────────────────────
+void readConfigOnce(const char* path, LampConfig& cfg) {
+  if (!wifiConnected || !firebaseReady) return;
+
+  FirebaseJson fbjson;
+  if (Firebase.RTDB.getJSON(&fbdo, path, &fbjson)) {
+    FirebaseJsonData d;
+    float ep = cfg.expectedPower;   // pertahankan nilai lama kalau field absen
+    int   lc = cfg.lampCount;
+    float tp = cfg.tolerancePercent;
+
+    if (fbjson.get(d, "expected_power"))    ep = d.floatValue;
+    if (fbjson.get(d, "lamp_count"))        lc = d.intValue;
+    if (fbjson.get(d, "tolerance_percent")) tp = d.floatValue;
+
+    // Kalau node ada tapi kosong, pakai default app
+    if (tp <= 0.0f) tp = TOLERANCE_DEFAULT;
+
+    cfg.expectedPower    = ep;
+    cfg.lampCount        = lc;
+    cfg.tolerancePercent = tp;
+    cfg.loaded           = true;
+    cfg.lastReadMs       = millis();
+
+    Serial.printf("[CFG] %s -> expected=%.0fW lamps=%d tol=%.0f%%\n",
+                  path, ep, lc, tp);
+  } else {
+    // Gagal baca (network/node absen): PERTAHANKAN config lama, jangan nol-kan.
+    // Config yang sudah diketahui baik tidak boleh hilang karena blip jaringan.
+    Serial.printf("[CFG] %s read failed: %s (keep last)\n",
+                  path, fbdo.errorReason().c_str());
+  }
+}
+
+// ── Evaluator (port presisi decision_tree_evaluator.dart:127-262) ───────────
+LampStatusFw evaluateLampStatusFw(bool relayOn, float voltage, float current,
+                                  float power, const LampConfig& cfg, bool sensorOk) {
+  // ROOT: sensor tidak tersedia (prioritas tertinggi)
+  if (!sensorOk) return LampStatusFw::FW_SENSOR_ERROR;
+
+  // NODE 1: relay OFF — lampu seharusnya mati
+  if (!relayOn) {
+    if (power > LEAK_POWER_W || current > LEAK_CURRENT_A) {
+      return LampStatusFw::FW_RELAY_LEAKAGE;
+    }
+    return LampStatusFw::FW_NORMAL_STANDBY;
+  }
+
+  // NODE 2: relay ON — cek kualitas tegangan (pakai tegangan PZEM)
+  if (voltage < PLN_OUTAGE_V)   return LampStatusFw::FW_PLN_OUTAGE;
+  if (voltage < UNDER_VOLTAGE_V) return LampStatusFw::FW_UNDER_VOLTAGE;
+  if (voltage > OVER_VOLTAGE_V)  return LampStatusFw::FW_OVER_VOLTAGE;
+
+  // NODE 3: tegangan normal — evaluasi konsumsi daya
+  if (cfg.expectedPower <= 0.0f) {
+    // Config belum diisi: status dasar dari daya saja
+    if (power < NO_CONFIG_MIN_W) return LampStatusFw::FW_CIRCUIT_BROKEN;
+    return LampStatusFw::FW_NORMAL_ACTIVE;
+  }
+
+  const float powerPerLamp = (cfg.lampCount > 0)
+      ? (cfg.expectedPower / (float)cfg.lampCount)
+      : DEFAULT_PPL_W;
+  const float lower = cfg.expectedPower * (1.0f - cfg.tolerancePercent / 100.0f);
+  const float upper = cfg.expectedPower * (1.0f + cfg.tolerancePercent / 100.0f);
+
+  // Daya nyaris nol padahal relay ON & tegangan normal -> jalur putus
+  if (power < powerPerLamp * BROKEN_FRACTION) return LampStatusFw::FW_CIRCUIT_BROKEN;
+
+  // Dalam rentang toleransi -> normal
+  if (power >= lower && power <= upper) return LampStatusFw::FW_NORMAL_ACTIVE;
+
+  // Di bawah batas bawah -> sebagian lampu mati
+  if (power < lower) return LampStatusFw::FW_PARTIAL_LAMP_FAIL;
+
+  // Catch-all: di atas batas atas -> beban berlebih
+  return LampStatusFw::FW_OVERLOAD;
+}
+
+// ── Jumlah lampu mati (estimasi, clamp 1..lampCount) ────────────────────────
+int estimateDeadLamps(float power, const LampConfig& cfg) {
+  if (cfg.expectedPower <= 0.0f) return 0;
+  const float powerPerLamp = (cfg.lampCount > 0)
+      ? (cfg.expectedPower / (float)cfg.lampCount)
+      : DEFAULT_PPL_W;
+  if (powerPerLamp <= 0.0f) return 0;
+  int dead = (int)lroundf((cfg.expectedPower - power) / powerPerLamp);
+  if (dead < 1) dead = 1;
+  if (cfg.lampCount > 0 && dead > cfg.lampCount) dead = cfg.lampCount;
+  return dead;
+}
+
+// ── Nama status (string enum Dart — untuk wire/RTDB) ────────────────────────
+const char* lampStatusName(LampStatusFw s) {
+  switch (s) {
+    case LampStatusFw::FW_SENSOR_ERROR:      return "sensorError";
+    case LampStatusFw::FW_PLN_OUTAGE:        return "plnOutage";
+    case LampStatusFw::FW_UNDER_VOLTAGE:     return "underVoltage";
+    case LampStatusFw::FW_OVER_VOLTAGE:      return "overVoltage";
+    case LampStatusFw::FW_NORMAL_STANDBY:    return "normalStandby";
+    case LampStatusFw::FW_NORMAL_ACTIVE:     return "normalActive";
+    case LampStatusFw::FW_CIRCUIT_BROKEN:    return "circuitBroken";
+    case LampStatusFw::FW_PARTIAL_LAMP_FAIL: return "partialLampFail";
+    case LampStatusFw::FW_OVERLOAD:          return "overload";
+    case LampStatusFw::FW_RELAY_LEAKAGE:     return "relayLeakage";
+  }
+  return "unknown";
+}
+
+// ── Label OLED (pendek; maks 13 char agar muat "Status: XXXXX" = 20 char) ───
+const char* lampStatusShortLabel(LampStatusFw s) {
+  switch (s) {
+    case LampStatusFw::FW_SENSOR_ERROR:      return "Sensor Error";
+    case LampStatusFw::FW_PLN_OUTAGE:        return "Listrik Padam";
+    case LampStatusFw::FW_UNDER_VOLTAGE:     return "Teg. Rendah";
+    case LampStatusFw::FW_OVER_VOLTAGE:      return "Teg. Tinggi";
+    case LampStatusFw::FW_NORMAL_STANDBY:    return "Standby";
+    case LampStatusFw::FW_NORMAL_ACTIVE:     return "Normal";
+    case LampStatusFw::FW_CIRCUIT_BROKEN:    return "Lampu Padam";
+    case LampStatusFw::FW_PARTIAL_LAMP_FAIL: return "Lampu Rusak";
+    case LampStatusFw::FW_OVERLOAD:          return "Beban Lebih";
+    case LampStatusFw::FW_RELAY_LEAKAGE:     return "Relay Bocor";
+  }
+  return "?";
+}
+
+// ── Baris status OLED: label + jumlah lampu rusak (kalau ada) ───────────────
+// Lebar baris size 1 = 21 char (126px) dari 128px.
+// "Status: Lampu Rusak" = 20 char (120px) — sudah mepet; menambah " (2)"
+// jadi 23 char (138px) OVER. Karena itu untuk partialLampFail label
+// dipendekkan jadi "Rusak" → "Status: Rusak (2)" = 17 char (102px), muat.
+// Sumber angka: diagX.brokenLamps (dihitung estimateDeadLamps(), clamp 1..lampCount).
+void formatStatusLine(const LampDiag& d, char* buf, size_t n) {
+  if (d.status == LampStatusFw::FW_PARTIAL_LAMP_FAIL && d.brokenLamps > 0) {
+    snprintf(buf, n, "Status: Rusak (%d)", d.brokenLamps);
+  } else {
+    snprintf(buf, n, "Status: %s", lampStatusShortLabel(d.status));
+  }
+}
+
+// ── Hitung diagA/diagB dari state saat ini ─────────────────────────────────
+// Dipanggil dari updateOLED() tiap 1 detik, jadi tetap fresh walau WiFi/Firebase
+// mati (sendToFirebase() early-return).
+void updateDiagnostics() {
+  const unsigned long now = millis();
+
+  // Grace period: sejak ZMPT pertama valid
+  static unsigned long firstZMPTMs = 0;
+  if (plnStateInit && firstZMPTMs == 0) firstZMPTMs = now;
+  const bool inGrace = (firstZMPTMs == 0) || (now - firstZMPTMs < SENSOR_GRACE_MS);
+
+  // Freshness: pembacaan PZEM masih baru?
+  const bool freshA = (blockA.lastGoodMs != 0) && (now - blockA.lastGoodMs < ENERGY_STALE_MS);
+  const bool freshB = (blockB.lastGoodMs != 0) && (now - blockB.lastGoodMs < ENERGY_STALE_MS);
+
+  // Nilai efektif: nol kalau tidak bisa dipercaya (PLN mati / basi / invalid)
+  const bool usableA = plnPrevState && blockA.valid && freshA;
+  const bool usableB = plnPrevState && blockB.valid && freshB;
+  const float vA = usableA ? blockA.voltage : 0.0f;
+  const float cA = usableA ? blockA.current : 0.0f;
+  const float pA = usableA ? blockA.power   : 0.0f;
+  const float vB = usableB ? blockB.voltage : 0.0f;
+  const float cB = usableB ? blockB.current : 0.0f;
+  const float pB = usableB ? blockB.power   : 0.0f;
+
+  // sensorOk: PLN mati BUKAN sensor error (sensor lokal sehat, sumbernya hilang).
+  // Tanpa suku !plnPrevState, PLN padam akan salah dilaporkan sebagai sensorError.
+  const bool sensorOkA = inGrace || !plnPrevState || (blockA.valid && freshA);
+  const bool sensorOkB = inGrace || !plnPrevState || (blockB.valid && freshB);
+
+  // Settling: tahan status lama selama 4 detik setelah toggle
+  const bool settlingA = (now - lampToggleMsA) < TOGGLE_SETTLING_MS;
+  const bool settlingB = (now - lampToggleMsB) < TOGGLE_SETTLING_MS;
+
+  LampDiag na, nb;
+
+  if (settlingA) {
+    na = diagA;                 // pertahankan hasil sebelum toggle
+    na.settling = true;
+  } else {
+    na.status = evaluateLampStatusFw(lampAState, vA, cA, pA, configA, sensorOkA);
+    na.brokenLamps = (na.status == LampStatusFw::FW_PARTIAL_LAMP_FAIL)
+                     ? estimateDeadLamps(pA, configA)
+                     : ((na.status == LampStatusFw::FW_CIRCUIT_BROKEN) ? configA.lampCount : 0);
+    na.isAlert = !(na.status == LampStatusFw::FW_NORMAL_ACTIVE ||
+                   na.status == LampStatusFw::FW_NORMAL_STANDBY);
+    na.settling = false;
+  }
+
+  if (settlingB) {
+    nb = diagB;
+    nb.settling = true;
+  } else {
+    nb.status = evaluateLampStatusFw(lampBState, vB, cB, pB, configB, sensorOkB);
+    nb.brokenLamps = (nb.status == LampStatusFw::FW_PARTIAL_LAMP_FAIL)
+                     ? estimateDeadLamps(pB, configB)
+                     : ((nb.status == LampStatusFw::FW_CIRCUIT_BROKEN) ? configB.lampCount : 0);
+    nb.isAlert = !(nb.status == LampStatusFw::FW_NORMAL_ACTIVE ||
+                   nb.status == LampStatusFw::FW_NORMAL_STANDBY);
+    nb.settling = false;
+  }
+
+  diagA = na;
+  diagB = nb;
+
+  // Log serial (throttle 5 detik) untuk verifikasi lapangan
+  static unsigned long lastDiagLog = 0;
+  if (now - lastDiagLog >= 5000) {
+    lastDiagLog = now;
+    Serial.printf("[DIAG] A:%s (%.0fW %.0fV) B:%s (%.0fW %.0fV)%s\n",
+                  lampStatusName(diagA.status), pA, vA,
+                  lampStatusName(diagB.status), pB, vB,
+                  (settlingA || settlingB) ? " [settling]" : "");
+  }
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -546,20 +846,29 @@ void updateOLED() {
   display.printf("Source: %s", plnPrevState ? "PLN" : "UPS");
 
   // ── Baris 4-7: Blok A/B — daya + baris status sendiri ──────────────────────
-  // Daya digate dengan plnPrevState: readPZEM() di-skip saat PLN mati sehingga
-  // blockX.valid tetap basi (true). Sama seperti sendToFirebase().
-  float powerA = (plnPrevState && blockA.valid) ? blockA.power : 0.0;
-  float powerB = (plnPrevState && blockB.valid) ? blockB.power : 0.0;
+  // Hitung diagnosa dulu (fresh, jalan walau WiFi/Firebase mati).
+  updateDiagnostics();
+
+  // Daya efektif: nol kalau tidak bisa dipercaya (PLN mati / basi / invalid).
+  // Gate sama dengan yang dipakai evaluator — supaya angka dan label konsisten.
+  const bool freshA = (blockA.lastGoodMs != 0) && (millis() - blockA.lastGoodMs < ENERGY_STALE_MS);
+  const bool freshB = (blockB.lastGoodMs != 0) && (millis() - blockB.lastGoodMs < ENERGY_STALE_MS);
+  const float powerA = (plnPrevState && blockA.valid && freshA) ? blockA.power : 0.0f;
+  const float powerB = (plnPrevState && blockB.valid && freshB) ? blockB.power : 0.0f;
+
+  char stA[24], stB[24];
+  formatStatusLine(diagA, stA, sizeof(stA));
+  formatStatusLine(diagB, stB, sizeof(stB));
 
   display.setCursor(0, 24);
   display.printf("Blok A: %.0fW", powerA);
   display.setCursor(0, 32);
-  display.printf("Status: %s", lampStatusLabel(lampAState, powerA));
+  display.print(stA);
 
   display.setCursor(0, 40);
   display.printf("Blok B: %.0fW", powerB);
   display.setCursor(0, 48);
-  display.printf("Status: %s", lampStatusLabel(lampBState, powerB));
+  display.print(stB);
 
   display.display();
 }
@@ -659,6 +968,7 @@ void sendToFirebase() {
   FirebaseJson pingJson;
   pingJson.set("online", lastPingOk);
   pingJson.set("latency_ms", (int)lastPingMs);
+  pingJson.set("ssid", WiFi.SSID());
   pingJson.set("timestamp", (double)ts);
   Firebase.RTDB.setJSON(&fbdo, "/device/ping", &pingJson);
 
