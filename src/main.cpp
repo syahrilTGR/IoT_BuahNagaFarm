@@ -14,6 +14,9 @@ RTC_DS3231 rtc;
 // NTP time sync
 #include "time.h"
 
+// Ping (ESP-IDF esp_ping) — untuk cek konektivitas internet
+#include "ping/ping_sock.h"
+
 // ── Pin Definition ───────────────────────────────────────────────────────────
 static const uint8_t SSR_PIN = 14;          // GPIO14 → SSR (Blok A)
 static const uint8_t SSR_PIN_B = 13;        // GPIO13 → SSR (Blok B)
@@ -74,6 +77,7 @@ Timer timerCheckCmd  {0, 100};    // Cek perintah Firebase tiap 100ms
 Timer timerBuzzer    {0, 0};      // Buzzer non-blocking
 Timer timerZMPT      {0, 100};    // Baca ZMPT tiap 100ms
 Timer timerResetWifi {0, 3000};   // Cek perintah reset WiFi tiap 3 detik
+Timer timerPing      {0, 3000};   // Ping 8.8.8.8 tiap 3 detik
 
 // ── State ────────────────────────────────────────────────────────────────────
 struct EnergyData {
@@ -115,6 +119,11 @@ bool buzzerActive = false;
 unsigned long buzzerDuration = 0;
 unsigned long buzzerOffTime = 0;  // track when buzzer last turned OFF (for alarm silence gap)
 
+// ── Ping state ───────────────────────────────────────────────────────────────
+bool lastPingOk = false;
+unsigned long lastPingMs = 0;  // latency dalam ms
+IPAddress pingTarget(8, 8, 8, 8);  // Google Public DNS
+
 // ── ZMPT state ───────────────────────────────────────────────────────────────
 // Buffer 600 sampel: baseline + RMS dihitung dari jendela yang SAMA
 static int zmptBuffer[ZMPT_SAMPLES];
@@ -150,6 +159,7 @@ void buzzerOn(unsigned long durationMs);
 void readZMPT();
 void syncRTC();
 void checkWifiResetCommand();
+void pingGoogle();
 
 void setup() {
   Serial.begin(115200);
@@ -376,6 +386,12 @@ void loop() {
     readZMPT();
   }
 
+  // 7. Ping google.com tiap 3 detik (non-blocking)
+  if (now - timerPing.prev >= timerPing.interval) {
+    timerPing.prev = now;
+    pingGoogle();
+  }
+
   // Watchdog / keep WiFi alive
   if (WiFi.status() != WL_CONNECTED) {
     wifiConnected = false;
@@ -469,44 +485,81 @@ void setLampB(bool state) {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-// OLED Display (placeholder - implement nanti)
+// Status lampu untuk OLED — mengikuti taksonomi app (LampDiagnosticStatus):
+// Standby / Normal / Gangguan.
+//
+// Firmware tidak punya `expectedPower` (daya harapan dari pengaturan app),
+// jadi hanya 3 keadaan ini yang bisa dievaluasi lokal:
+//   Standby  : perintah OFF dan tidak ada beban
+//   Normal   : perintah ON  dan ada beban
+//   Gangguan : perintah ON  tapi tanpa beban (PLN mati / jalur putus),
+//              atau perintah OFF tapi masih ada beban (relay bocor)
+//
+// Ambang beban 5W: lampu ~15W (lihat docs/arsitektur), cukup untuk memisahkan
+// "tidak ada beban" dari "ada beban" tanpa terpengaruh noise PZEM.
+// ════════════════════════════════════════════════════════════════════════════
+static const float STATUS_POWER_MIN_W = 5.0;
+
+const char* lampStatusLabel(bool commanded, float power) {
+  bool hasLoad = power >= STATUS_POWER_MIN_W;
+  if (commanded == hasLoad) return commanded ? "Normal" : "Standby";
+  return "Gangguan";
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// OLED Display — layout 7 baris size 1 (permintaan Pak Amin Rodhi)
+//   y=0  : Waktu (rata tengah)
+//   y=8  : Wifi: online XXms / offline
+//   y=16 : Source: PLN / UPS
+//   y=24 : Blok A: XXXXW
+//   y=32 : Status: Standby / Normal / Gangguan
+//   y=40 : Blok B: XXXXW
+//   y=48 : Status: Standby / Normal / Gangguan
+//   y=56 : sisa 8px
+//
+// Catatan font: Adafruit_GFX hanya punya size 1 (6×8px) dan size 2 (12×16px).
+// Semua baris di sini size 1 — 7×8 = 56px dari 64px.
 // ════════════════════════════════════════════════════════════════════════════
 void updateOLED() {
   display.clearDisplay();
-
-  // Line 1: NET status (kiri) + Power source (kanan)
+  display.setTextColor(WHITE);
   display.setTextSize(1);
-  display.setCursor(0, 0);
 
-  // Tampilkan status Config Portal jika aktif
-  if (inConfigPortal) {
-    display.print("CFG: PORTAL");
-  } else {
-    display.print(wifiConnected ? "NET: ONLINE" : "NET: OFFLINE");
-  }
-
-  const char* source = plnPrevState ? "PLN" : "UPS";
-
-  // "Src: PLN" = 8 char = 48px → rata kanan di x=78
-  display.setCursor(78, 0);
-  display.printf("Src:%s", source);
-
-  // Line 2: Waktu (RTC)
-  display.setCursor(0, 16);
+  // ── Baris 1: Waktu (RTC) — rata tengah ─────────────────────────────────────
+  // 8 char × 6px = 48px → x = (128 - 48) / 2 = 40
   DateTime now = rtc.now();
+  display.setCursor(40, 0);
   display.printf("%02d:%02d:%02d", now.hour(), now.minute(), now.second());
 
-  // Line 3-4: Power A dan B vertikal (atas-bawah), text size 2
-  display.setTextSize(2);
+  // ── Baris 2: Status WiFi + latency ping (8.8.8.8) ──────────────────────────
+  display.setCursor(0, 8);
+  if (inConfigPortal) {
+    display.print("Wifi: PORTAL");
+  } else if (wifiConnected && lastPingOk) {
+    display.printf("Wifi: online %lums", lastPingMs);
+  } else {
+    display.print("Wifi: offline");
+  }
 
-  float powerA = blockA.valid ? blockA.power : 0.0;
-  float powerB = blockB.valid ? blockB.power : 0.0;
+  // ── Baris 3: Sumber daya (PLN / UPS) ───────────────────────────────────────
+  display.setCursor(0, 16);
+  display.printf("Source: %s", plnPrevState ? "PLN" : "UPS");
 
-  display.setCursor(0, 28);
-  display.printf("A:%.0fW", powerA);
+  // ── Baris 4-7: Blok A/B — daya + baris status sendiri ──────────────────────
+  // Daya digate dengan plnPrevState: readPZEM() di-skip saat PLN mati sehingga
+  // blockX.valid tetap basi (true). Sama seperti sendToFirebase().
+  float powerA = (plnPrevState && blockA.valid) ? blockA.power : 0.0;
+  float powerB = (plnPrevState && blockB.valid) ? blockB.power : 0.0;
 
-  display.setCursor(0, 46);
-  display.printf("B:%.0fW", powerB);
+  display.setCursor(0, 24);
+  display.printf("Blok A: %.0fW", powerA);
+  display.setCursor(0, 32);
+  display.printf("Status: %s", lampStatusLabel(lampAState, powerA));
+
+  display.setCursor(0, 40);
+  display.printf("Blok B: %.0fW", powerB);
+  display.setCursor(0, 48);
+  display.printf("Status: %s", lampStatusLabel(lampBState, powerB));
 
   display.display();
 }
@@ -602,6 +655,13 @@ void sendToFirebase() {
   // Heartbeat: device online status (updated tiap 1s bersama energy data)
   Firebase.RTDB.setInt(&fbdo, "/device/heartbeat", (int)ts);
 
+  // Ping status: konektivitas internet device (untuk ditampilkan di app)
+  FirebaseJson pingJson;
+  pingJson.set("online", lastPingOk);
+  pingJson.set("latency_ms", (int)lastPingMs);
+  pingJson.set("timestamp", (double)ts);
+  Firebase.RTDB.setJSON(&fbdo, "/device/ping", &pingJson);
+
   // Note: /lamp/status/{a,b} ditulis oleh aplikasi (updateLampControl)
   // Firmware hanya baca /lamp/control/{a,b} untuk eksekusi perintah
 }
@@ -629,6 +689,74 @@ void checkWifiResetCommand() {
       ESP.restart();
     }
   }
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Ping Google.com (8.8.8.8) — Connectivity check untuk mobile app
+// Pakai ESP-IDF esp_ping (ping_sock.h). Non-blocking: sesi ping berjalan
+// di task sendiri, hasil dilaporkan lewat callback.
+// ════════════════════════════════════════════════════════════════════════════
+// Ping state
+esp_ping_handle_t pingHandle = nullptr;
+
+// Callback: balasan ICMP diterima
+static void onPingSuccess(esp_ping_handle_t hdl, void *args) {
+  uint32_t elapsed = 0;
+  esp_ping_get_profile(hdl, ESP_PING_PROF_TIMEGAP, &elapsed, sizeof(elapsed));
+  lastPingOk = true;
+  lastPingMs = elapsed;
+  Serial.printf("[PING] 8.8.8.8 OK, %lu ms\n", (unsigned long)elapsed);
+}
+
+// Callback: timeout
+static void onPingTimeout(esp_ping_handle_t hdl, void *args) {
+  lastPingOk = false;
+  lastPingMs = 0;
+  Serial.println("[PING] 8.8.8.8 TIMEOUT");
+}
+
+// Callback: sesi selesai → hapus sesi agar tidak bocor
+static void onPingEnd(esp_ping_handle_t hdl, void *args) {
+  esp_ping_delete_session(hdl);
+  pingHandle = nullptr;
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Ping Google.com (8.8.8.8) — Connectivity check untuk mobile app
+// ════════════════════════════════════════════════════════════════════════════
+void pingGoogle() {
+  if (inConfigPortal || !wifiConnected) {
+    lastPingOk = false;
+    lastPingMs = 0;
+    return;
+  }
+
+  // Jangan tumpuk sesi kalau yang sebelumnya belum selesai
+  if (pingHandle != nullptr) return;
+
+  esp_ping_config_t cfg = ESP_PING_DEFAULT_CONFIG();
+  cfg.count = 1;                  // 1 paket per siklus
+  cfg.timeout_ms = 1000;          // timeout 1 detik
+  cfg.interval_ms = 0;
+  cfg.data_size = 64;
+  cfg.task_stack_size = 4096;
+  cfg.task_prio = 1;              // prioritas rendah, jangan ganggu loop
+  IP_ADDR4(&cfg.target_addr, 8, 8, 8, 8);  // 8.8.8.8
+
+  esp_ping_callbacks_t cbs = {};
+  cbs.on_ping_success = onPingSuccess;
+  cbs.on_ping_timeout = onPingTimeout;
+  cbs.on_ping_end = onPingEnd;
+
+  if (esp_ping_new_session(&cfg, &cbs, &pingHandle) != ESP_OK) {
+    Serial.println("[PING] Gagal membuat sesi ping");
+    lastPingOk = false;
+    lastPingMs = 0;
+    pingHandle = nullptr;
+    return;
+  }
+
+  esp_ping_start(pingHandle);
 }
 
 // ════════════════════════════════════════════════════════════════════════════

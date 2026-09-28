@@ -147,6 +147,7 @@ AC Input — JALUR KONTROL (via UPS)
 /energy/z_mpt
   ├── pln: bool (PLN available)
   ├── voltage_raw: float (RMS ADC)
+  ├── voltage_real: float (volt terkalibrasi, RMS × 0.667)
   └── timestamp: int (epoch)
 
 /energy/pln_status
@@ -162,6 +163,14 @@ AC Input — JALUR KONTROL (via UPS)
 
 /device/heartbeat
   └── int (epoch seconds)
+
+/device/ping
+  ├── online: bool (ping 8.8.8.8 berhasil)
+  ├── latency_ms: int (waktu round-trip)
+  └── timestamp: int (epoch)
+
+/system/reset_wifi
+  └── bool (true = perintah reset WiFi dari app)
 ```
 
 ---
@@ -184,6 +193,8 @@ AC Input — JALUR KONTROL (via UPS)
      │               │                  │                │ 4. Listen
      │               │                  │                │    update UI
 ```
+
+Termasuk: energy (PZEM A/B), ZMPT, PLN status, heartbeat, **ping (8.8.8.8)**.
 
 ### 3.2 Control Flow (App → Cloud → ESP32 → Aktuator)
 
@@ -244,12 +255,13 @@ if (selisih > 5 detik)
 | Operasi | Interval | Latency | Catatan |
 |---------|----------|---------|--------|
 | PZEM read | 2.5 detik | 100ms (normal), 7s (timeout) | skip saat PLN mati |
-| Firebase send | 2.5 detik | 500ms-2s (blocking) | 6+ RTDB writes per cycle |
+| Firebase send | 2.5 detik | 500ms-2s (blocking) | 7+ RTDB writes per cycle |
 | Firebase command check | 100ms | 100-500ms | debounce 2s per lamp |
-| ZMPT read | 100ms | 30ms | 400 sampel ADC, delayMicroseconds |
+| ZMPT read | 100ms | 30ms | 600 sampel ADC, delayMicroseconds |
 | OLED update | 1 detik | <10ms | I2C 100kHz |
-| Buzzer toggle | on-demand | 200ms (toggle), 500ms (alarm) | millis() safety net |
-| PLN detection | 100ms | real-time | threshold 180V RMS |
+| Buzzer toggle | on-demand | 200ms (toggle), 2000ms (alarm) | millis() safety net |
+| PLN detection | 100ms | real-time | threshold 150V RMS |
+| **Ping 8.8.8.8** | **3 detik** | **~20-200ms** | **non-blocking (esp_ping task)** |
 
 **End-to-end control latency (App → Lamp):**
 - Best case: 100ms (command poll) + 500ms (Firebase write) = **~600ms**

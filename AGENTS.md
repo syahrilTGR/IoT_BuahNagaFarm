@@ -45,3 +45,4 @@ Lihat `WIRING.md` dan `docs/arsitektur-sistem.md`. Pin aktual ada di
 ## Note
 - Jika terminal berada di `/Volumes/Data Shared/Project/magang/smartnaga_app/`, cukup tunjukkan command Flutter, jangan eksekusi sendiri. User yang jalankan di terminal-nya.
 - **Compile & upload firmware dijalankan user sendiri**, bukan oleh agent. Agent hanya edit kode.
+- **Jangan update dokumentasi (`TODO.md`, `docs/*.md`, `README`) sebelum user menyatakan pekerjaan sudah benar.** Agent hanya edit kode dulu. Dokumentasi diupdate setelah user konfirmasi. Alasan: perubahan yang akhirnya di-revert bikin kerja dobel dan boros token.

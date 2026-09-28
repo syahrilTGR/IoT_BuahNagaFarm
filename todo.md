@@ -90,6 +90,7 @@ di App — PERLU DIPERBAIKI (temuan audit firmware 2026-09-25)
 
 di RTDB
 - add tugangan zmpt ke firebase
+- [/device/ping] tambah node ping: online (bool), latency_ms (int), timestamp (int) — [x] firmware sudah kirim
 
 di hardware
 - buzzer PLN mati: ganti beep-beep (500ms/3s) jadi beep panjang 2 detik di awal mati lampu aja [x]
@@ -100,6 +101,18 @@ di hardware
 - tulisan src di oled, geser ke kanan, jdi tulisan ups atau PLN itu mentok ke kanan [x]
 - trus tulisan wifi: ON / OFF, ganti dengan tulisan ONLINE, OFFLINE. cek apakah cukup ruang di olednya? [x]
 - ESP32 reboot (POWERON_RESET) saat PLN dicabut — cek apakah disupply dari UPS atau USB saat test
+
+di OLED (permintaan Pak Amin Rodhi, 2026-09-28)
+- [x] Ping 8.8.8.8 tiap 3 detik → tampil "Wifi: online XXms" / "Wifi: offline"
+- [x] Layout 5 baris: Waktu (size 2, tengah) / Wifi+ping / Source / Blok A: daya + ON-OFF / Blok B: daya + ON-OFF
+- [x] "Status" di Blok A/B = nilai daya (W) + status perintah SSR (ON/OFF)
+- Catatan: Adafruit_GFX hanya punya size 1 & 2 — size 1 sudah minimum.
+      Permintaan "font status lebih kecil" diwujudkan dengan waktu size 2 (paling besar),
+      baris lain size 1.
+- [DICOBA, DIBATALKAN] Font FreeSans9pt7b (14px) sempat dicoba, tapi hasilnya
+      kurang bagus — user revert ke size 1/2 built-in. Alasan teknis: font
+      proportional hanya muat 4 baris, dan setCursor jadi baseline (bukan top-left)
+      sehingga tata letak harus dirombak.
 
 ---
 
