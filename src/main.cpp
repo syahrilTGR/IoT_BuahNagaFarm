@@ -716,15 +716,31 @@ const char* lampStatusShortLabel(LampStatusFw s) {
   return "?";
 }
 
-// ── Baris status OLED: label + jumlah lampu rusak (kalau ada) ───────────────
+// ── Baris status OLED: "menyala/total" kalau jumlah lampu diketahui ─────────
 // Lebar baris size 1 = 21 char (126px) dari 128px.
-// "Status: Lampu Rusak" = 20 char (120px) — sudah mepet; menambah " (2)"
-// jadi 23 char (138px) OVER. Karena itu untuk partialLampFail label
-// dipendekkan jadi "Rusak" → "Status: Rusak (2)" = 17 char (102px), muat.
-// Sumber angka: diagX.brokenLamps (dihitung estimateDeadLamps(), clamp 1..lampCount).
-void formatStatusLine(const LampDiag& d, char* buf, size_t n) {
-  if (d.status == LampStatusFw::FW_PARTIAL_LAMP_FAIL && d.brokenLamps > 0) {
-    snprintf(buf, n, "Status: Rusak (%d)", d.brokenLamps);
+//   "Status: 7/9 Normal" = 18 char (108px) — lega
+//   "Status: 12/12 Normal"= 19 char (114px) — masih muat
+// Angka diambil dari diagX.brokenLamps (estimateDeadLamps(), clamp 1..lampCount);
+// normal = lampCount - broken.
+//
+// Hanya untuk status di mana "berapa lampu menyala" itu bermakna:
+//   NORMAL_ACTIVE     -> N/N   (semua hidup)
+//   PARTIAL_LAMP_FAIL -> N/T   (sebagian mati)  <- inti permintaan
+//   CIRCUIT_BROKEN    -> 0/T   (semua mati)
+// Status lain (Standby/PLN Padam/Sensor Error/dll) tetap pakai label, karena
+// jumlah lampu menyala bukan pertanyaan yang relevan di sana.
+void formatStatusLine(const LampDiag& d, const LampConfig& cfg, char* buf, size_t n) {
+  const bool countMakesSense =
+      (d.status == LampStatusFw::FW_NORMAL_ACTIVE) ||
+      (d.status == LampStatusFw::FW_PARTIAL_LAMP_FAIL) ||
+      (d.status == LampStatusFw::FW_CIRCUIT_BROKEN);
+
+  if (countMakesSense && cfg.lampCount > 0) {
+    int dead = d.brokenLamps;
+    if (dead < 0) dead = 0;
+    if (dead > cfg.lampCount) dead = cfg.lampCount;
+    int menyala = cfg.lampCount - dead;
+    snprintf(buf, n, "Status: %d/%d Normal", menyala, cfg.lampCount);
   } else {
     snprintf(buf, n, "Status: %s", lampStatusShortLabel(d.status));
   }
@@ -857,8 +873,8 @@ void updateOLED() {
   const float powerB = (plnPrevState && blockB.valid && freshB) ? blockB.power : 0.0f;
 
   char stA[24], stB[24];
-  formatStatusLine(diagA, stA, sizeof(stA));
-  formatStatusLine(diagB, stB, sizeof(stB));
+  formatStatusLine(diagA, configA, stA, sizeof(stA));
+  formatStatusLine(diagB, configB, stB, sizeof(stB));
 
   display.setCursor(0, 24);
   display.printf("Blok A: %.0fW", powerA);
