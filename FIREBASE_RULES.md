@@ -33,6 +33,26 @@
           "state": { ".validate": "newData.isBool()" },
           "timestamp": { ".validate": "newData.isNumber()" }
         }
+      },
+      "diag": {
+        ".read": "auth != null",
+        ".write": "auth != null",
+        "a": {
+          ".validate": "newData.hasChildren(['status', 'brokenLamps', 'isAlert', 'timestamp'])",
+          "status": { ".validate": "newData.isString()" },
+          "brokenLamps": { ".validate": "newData.isNumber()" },
+          "isAlert": { ".validate": "newData.isBool()" },
+          "settling": { ".validate": "newData.isBool()" },
+          "timestamp": { ".validate": "newData.isNumber()" }
+        },
+        "b": {
+          ".validate": "newData.hasChildren(['status', 'brokenLamps', 'isAlert', 'timestamp'])",
+          "status": { ".validate": "newData.isString()" },
+          "brokenLamps": { ".validate": "newData.isNumber()" },
+          "isAlert": { ".validate": "newData.isBool()" },
+          "settling": { ".validate": "newData.isBool()" },
+          "timestamp": { ".validate": "newData.isNumber()" }
+        }
       }
     },
     "device": {
@@ -40,7 +60,18 @@
       ".write": "auth != null",
       "online": { ".validate": "newData.isBool()" },
       "last_seen": { ".validate": "newData.isNumber()" },
-      "firmware_version": { ".validate": "newData.isString()" }
+      "firmware_version": { ".validate": "newData.isString()" },
+      "heartbeat": { ".validate": "newData.isNumber()" },
+      "ping": {
+        ".validate": "newData.hasChildren(['online', 'ssid', 'timestamp'])",
+        "online": { ".validate": "newData.isBool()" },
+        "latency_ms": { ".validate": "newData.isNumber()" },
+        "ssid": { ".validate": "newData.isString()" },
+        "rssi": { ".validate": "newData.isNumber()" },
+        "ip": { ".validate": "newData.isString()" },
+        "mac": { ".validate": "newData.isString()" },
+        "timestamp": { ".validate": "newData.isNumber()" }
+      }
     },
     "energy": {
       ".read": "auth != null",
@@ -62,9 +93,16 @@
 |-----------------------------|--------|-------|-------|------------------------------|
 | `/lamp/control/{a,b}`      | bool   | auth  | auth  | Boolean only                 |
 | `/lamp/status/{a,b}`      | object | auth  | auth  | {state: bool, timestamp: num}|
+| `/lamp/diag/{a,b}`        | object | auth  | auth  | {status: str, brokenLamps: num, isAlert: bool, settling: bool, timestamp: num} |
 | `/device/online`           | bool   | auth  | auth  | Boolean only                 |
 | `/device/last_seen`        | number | auth  | auth  | Number only                  |
+| `/device/heartbeat`        | number | auth  | auth  | Number only                  |
+| `/device/ping`             | object | auth  | auth  | {online: bool, ssid: str, rssi: num, ip: str, mac: str, latency_ms: num, timestamp: num} |
 | `/energy/{a,b}`           | object | auth  | auth  | {voltage, current, power, energy} |
+
+> **Catatan `/lamp/diag/{a,b}`**: ditulis **hanya oleh firmware** ESP32 (hasil
+> decision tree). App hanya membaca. Ini menjadikan firmware sebagai satu-satunya
+> evaluator decision tree sejak 2026-09-29.
 
 ---
 
@@ -96,6 +134,12 @@ service cloud.firestore {
 
     // Device config collection
     match /devices/{deviceId} {
+      allow read, write: if request.auth != null;
+    }
+
+    // Energy sessions — satu dokumen per siklus lampu ON→OFF
+    // (ditulis SessionHistoryService di app; dibaca tab Historis)
+    match /energy_sessions/{sessionId} {
       allow read, write: if request.auth != null;
     }
 

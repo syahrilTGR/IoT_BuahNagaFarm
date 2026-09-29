@@ -985,8 +985,31 @@ void sendToFirebase() {
   pingJson.set("online", lastPingOk);
   pingJson.set("latency_ms", (int)lastPingMs);
   pingJson.set("ssid", WiFi.SSID());
+  pingJson.set("rssi", WiFi.RSSI());
+  pingJson.set("ip", WiFi.localIP().toString());
+  pingJson.set("mac", WiFi.macAddress());
   pingJson.set("timestamp", (double)ts);
   Firebase.RTDB.setJSON(&fbdo, "/device/ping", &pingJson);
+
+  // ── Diagnosa decision tree → /lamp/diag/{a,b} ─────────────────────────────
+  // Firmware adalah SATU-SATUNYA pengevaluasi decision tree (sejak 2026-09-29).
+  // App hanya membaca node ini; tidak ada lagi evaluasi di sisi Flutter.
+  // diagA/diagB dihitung di updateDiagnostics() (dipanggil dari updateOLED()).
+  FirebaseJson diagJsonA;
+  diagJsonA.set("status", lampStatusName(diagA.status));
+  diagJsonA.set("brokenLamps", diagA.brokenLamps);
+  diagJsonA.set("isAlert", diagA.isAlert);
+  diagJsonA.set("settling", diagA.settling);
+  diagJsonA.set("timestamp", (double)ts);
+  Firebase.RTDB.setJSON(&fbdo, "/lamp/diag/a", &diagJsonA);
+
+  FirebaseJson diagJsonB;
+  diagJsonB.set("status", lampStatusName(diagB.status));
+  diagJsonB.set("brokenLamps", diagB.brokenLamps);
+  diagJsonB.set("isAlert", diagB.isAlert);
+  diagJsonB.set("settling", diagB.settling);
+  diagJsonB.set("timestamp", (double)ts);
+  Firebase.RTDB.setJSON(&fbdo, "/lamp/diag/b", &diagJsonB);
 
   // Note: /lamp/status/{a,b} ditulis oleh aplikasi (updateLampControl)
   // Firmware hanya baca /lamp/control/{a,b} untuk eksekusi perintah

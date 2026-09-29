@@ -1,0 +1,121 @@
+{
+  "rules": {
+    "lamp": {
+      "control": {
+        ".read": "auth != null",
+        ".write": "auth != null",
+        "a": {
+          ".validate": "newData.isBoolean()"
+        },
+        "b": {
+          ".validate": "newData.isBoolean()"
+        }
+      },
+      "status": {
+        ".read": "auth != null",
+        ".write": "auth != null",
+        "a": {
+          ".validate": "newData.hasChildren(['state', 'timestamp'])",
+          "state": { ".validate": "newData.isBoolean()" },
+          "timestamp": { ".validate": "newData.isNumber()" }
+        },
+        "b": {
+          ".validate": "newData.hasChildren(['state', 'timestamp'])",
+          "state": { ".validate": "newData.isBoolean()" },
+          "timestamp": { ".validate": "newData.isNumber()" }
+        }
+      },
+      "diag": {
+        ".read": "auth != null",
+        ".write": "auth != null",
+        "a": {
+          ".validate": "newData.hasChildren(['status', 'brokenLamps', 'isAlert', 'settling', 'timestamp'])",
+          "status": { ".validate": "newData.isString()" },
+          "brokenLamps": { ".validate": "newData.isNumber()" },
+          "isAlert": { ".validate": "newData.isBoolean()" },
+          "settling": { ".validate": "newData.isBoolean()" },
+          "timestamp": { ".validate": "newData.isNumber()" }
+        },
+        "b": {
+          ".validate": "newData.hasChildren(['status', 'brokenLamps', 'isAlert', 'settling', 'timestamp'])",
+          "status": { ".validate": "newData.isString()" },
+          "brokenLamps": { ".validate": "newData.isNumber()" },
+          "isAlert": { ".validate": "newData.isBoolean()" },
+          "settling": { ".validate": "newData.isBoolean()" },
+          "timestamp": { ".validate": "newData.isNumber()" }
+        }
+      }
+    },
+    "device": {
+      ".read": "auth != null",
+      ".write": "auth != null",
+      "heartbeat": { ".validate": "newData.isNumber()" },
+      "ping": {
+        ".validate": "newData.hasChildren(['online', 'ssid', 'timestamp'])",
+        "online": { ".validate": "newData.isBoolean()" },
+        "latency_ms": { ".validate": "newData.isNumber()" },
+        "ssid": { ".validate": "newData.isString()" },
+        "rssi": { ".validate": "newData.isNumber()" },
+        "ip": { ".validate": "newData.isString()" },
+        "mac": { ".validate": "newData.isString()" },
+        "timestamp": { ".validate": "newData.isNumber()" }
+      }
+    },
+    "energy": {
+      ".read": "auth != null",
+      ".write": "auth != null",
+      "block_a": {
+        ".validate": "newData.hasChildren(['voltage', 'current', 'power', 'energy'])"
+      },
+      "block_b": {
+        ".validate": "newData.hasChildren(['voltage', 'current', 'power', 'energy'])"
+      },
+      "pln_status": {
+        ".validate": "newData.hasChildren(['available', 'source', 'timestamp'])",
+        "available": { ".validate": "newData.isBoolean()" },
+        "source": { ".validate": "newData.isString()" },
+        "timestamp": { ".validate": "newData.isNumber()" }
+      },
+      "z_mpt": {
+        ".validate": "newData.hasChildren(['pln', 'voltage_raw', 'voltage_real', 'timestamp'])",
+        "pln": { ".validate": "newData.isBoolean()" },
+        "voltage_raw": { ".validate": "newData.isNumber()" },
+        "voltage_real": { ".validate": "newData.isNumber()" },
+        "timestamp": { ".validate": "newData.isNumber()" }
+      }
+    },
+    "config": {
+      ".read": "auth != null",
+      ".write": "auth != null",
+      "block_a": {
+        ".validate": "newData.hasChildren(['expected_power', 'lamp_count', 'tolerance_percent'])",
+        "expected_power": { ".validate": "newData.isNumber()" },
+        "lamp_count": { ".validate": "newData.isNumber()" },
+        "tolerance_percent": { ".validate": "newData.isNumber()" }
+      },
+      "block_b": {
+        ".validate": "newData.hasChildren(['expected_power', 'lamp_count', 'tolerance_percent'])",
+        "expected_power": { ".validate": "newData.isNumber()" },
+        "lamp_count": { ".validate": "newData.isNumber()" },
+        "tolerance_percent": { ".validate": "newData.isNumber()" }
+      }
+    },
+    "system": {
+      ".read": "auth != null",
+      ".write": "auth != null",
+      "reset_wifi": {
+        ".validate": "newData.isBoolean()"
+      }
+    },
+    "test": {
+      ".read": "auth != null",
+      ".write": "auth != null",
+      "status": {
+        ".validate": "newData.hasChildren(['lamp', 'uptime', 'rssi'])",
+        "lamp": { ".validate": "newData.isBoolean()" },
+        "uptime": { ".validate": "newData.isNumber()" },
+        "rssi": { ".validate": "newData.isNumber()" }
+      }
+    }
+  }
+}
