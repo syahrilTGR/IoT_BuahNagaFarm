@@ -355,16 +355,17 @@ void loop() {
           firebaseReady = true;
           Serial.println("[Firebase] Connected & Authenticated");
 
-          // Init default control paths
-          Firebase.RTDB.setBool(&fbdo, "/lamp/control/a", false);
-          Firebase.RTDB.setBool(&fbdo, "/lamp/control/b", false);
-
-          // Sync initial lamp state
+          // ── Sync state lampu dari Firebase (JANGAN tulis ke /lamp/control) ──
+          // /lamp/control/{a,b} adalah MILIK APP (user yang set dari app).
+          // Firmware hanya BOLEH BACA — kalau firmware menulis false di sini,
+          // ia menimpa state terakhir yang di-set user SEBELUM membacanya,
+          // sehingga lampu selalu ikut mati saat boot.
+          // Default OFF hanya dipakai kalau pembacaan GAGAL (fallback aman).
           bool stateA = false, stateB = false;
-          Firebase.RTDB.getBool(&fbdo, "/lamp/control/a");
-          if (fbdo.boolData()) stateA = fbdo.boolData();
-          Firebase.RTDB.getBool(&fbdo, "/lamp/control/b");
-          if (fbdo.boolData()) stateB = fbdo.boolData();
+          if (Firebase.RTDB.getBool(&fbdo, "/lamp/control/a")) stateA = fbdo.boolData();
+          if (Firebase.RTDB.getBool(&fbdo, "/lamp/control/b")) stateB = fbdo.boolData();
+          Serial.printf("[BOOT] Sync dari Firebase -> Blok A:%s  Blok B:%s\n",
+                        stateA ? "ON" : "OFF", stateB ? "ON" : "OFF");
           setLampA(stateA);
           setLampB(stateB);
 
