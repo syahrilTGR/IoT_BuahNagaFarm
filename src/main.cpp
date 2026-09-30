@@ -73,7 +73,7 @@ struct Timer {
 Timer timerPZEM      {0, 2500};   // Baca PZEM tiap 2 detik (skip saat PLN mati)
 Timer timerFirebase  {0, 2500};   // Kirim ke Firebase tiap 2 detik
 Timer timerOLED      {0, 1000};   // Update OLED tiap 1 detik
-Timer timerCheckCmd  {0, 100};    // Cek perintah Firebase tiap 100ms
+Timer timerCheckCmd  {0, 1000};   // Cek perintah Firebase tiap 1s (dulu 100ms)
 Timer timerBuzzer    {0, 0};      // Buzzer non-blocking
 Timer timerZMPT      {0, 100};    // Baca ZMPT tiap 100ms
 Timer timerResetWifi {0, 3000};   // Cek perintah reset WiFi tiap 3 detik
@@ -195,6 +195,21 @@ void updateOLED();
 void checkFirebaseCommands();
 void sendToFirebase();
 unsigned long getEpochSec();
+void printResetReason();
+
+// ── Instrumentasi timing operasi Firebase ─────────────────────────────────────
+// Selama debugging stall loop: laporkan setiap call > 500ms supaya terlihat
+// call mana yang menggantung saat stall. Hapus setelah akar masalah ketemu.
+template <typename Fn>
+bool fbTimed(const char* what, Fn fn) {
+  unsigned long t0 = millis();
+  bool ok = fn();
+  unsigned long dt = millis() - t0;
+  if (dt > 500) {
+    Serial.printf("[FB-SLOW] %s: %lums (ok=%d)\n", what, dt, ok);
+  }
+  return ok;
+}
 void printEnergyData(const EnergyData& d, const char* label);
 void buzzerOn(unsigned long durationMs);
 void readZMPT();
@@ -252,6 +267,9 @@ void setup() {
   } else {
     Serial.println("[RTC] Initialized");
   }
+
+// Log alasan reset setiap kali boot — dibutuhkan untuk membedakan crash vs loop stall
+  printResetReason();
 
   // Serial2 sudah di-init otomatis oleh PZEM004Tv30 constructor
 
@@ -345,6 +363,7 @@ void loop() {
         auth.user.password = FIREBASE_USER_PASSWORD;
         Firebase.begin(&config, &auth);
         Firebase.reconnectWiFi(true);
+        Firebase.RTDB.setReadTimeout(&fbdo, 5000);   // max 5s per RTDB call (default -1 = 30s)
         configTime(7 * 3600, 0, "pool.ntp.org", "time.nist.gov");
         sysState = SYS_FIREBASE_CHECK;
         stateStart = now;
@@ -596,7 +615,9 @@ void readConfigOnce(const char* path, LampConfig& cfg) {
   if (!wifiConnected || !firebaseReady) return;
 
   FirebaseJson fbjson;
-  if (Firebase.RTDB.getJSON(&fbdo, path, &fbjson)) {
+  if (fbTimed("getJSON config", [&]() {
+    return Firebase.RTDB.getJSON(&fbdo, path, &fbjson);
+  })) {
     FirebaseJsonData d;
     float ep = cfg.expectedPower;   // pertahankan nilai lama kalau field absen
     int   lc = cfg.lampCount;
@@ -899,7 +920,10 @@ void checkFirebaseCommands() {
   unsigned long now = millis();
 
   // Baca /lamp/control/a (boolean)
-  if (Firebase.RTDB.getBool(&fbdo, "/lamp/control/a")) {
+  bool gotA = fbTimed("getBool /lamp/control/a", [&]() {
+    return Firebase.RTDB.getBool(&fbdo, "/lamp/control/a");
+  });
+  if (gotA) {
     bool cmd = fbdo.boolData();
     if (cmd != lampAState && (now - lastCmdExecTimeA >= CMD_DEBOUNCE_MS)) {
       setLampA(cmd);
@@ -909,7 +933,10 @@ void checkFirebaseCommands() {
   }
 
   // Baca /lamp/control/b (boolean)
-  if (Firebase.RTDB.getBool(&fbdo, "/lamp/control/b")) {
+  bool gotB = fbTimed("getBool /lamp/control/b", [&]() {
+    return Firebase.RTDB.getBool(&fbdo, "/lamp/control/b");
+  });
+  if (gotB) {
     bool cmd = fbdo.boolData();
     if (cmd != lampBState && (now - lastCmdExecTimeB >= CMD_DEBOUNCE_MS)) {
       setLampB(cmd);
@@ -949,7 +976,9 @@ void sendToFirebase() {
   energyJson.set("energy", blockA.energy);
   energyJson.set("valid", validA);
   energyJson.set("timestamp", (double)ts);
-  Firebase.RTDB.setJSON(&fbdo, "/energy/block_a", &energyJson);
+  fbTimed("setJSON /energy/block_a", [&]() {
+    return Firebase.RTDB.setJSON(&fbdo, "/energy/block_a", &energyJson);
+  });
 
   // Kirim energy data ke /energy/block_b
   FirebaseJson energyJsonB;
@@ -959,7 +988,9 @@ void sendToFirebase() {
   energyJsonB.set("energy", blockB.energy);
   energyJsonB.set("valid", validB);
   energyJsonB.set("timestamp", (double)ts);
-  Firebase.RTDB.setJSON(&fbdo, "/energy/block_b", &energyJsonB);
+  fbTimed("setJSON /energy/block_b", [&]() {
+    return Firebase.RTDB.setJSON(&fbdo, "/energy/block_b", &energyJsonB);
+  });
 
   // Kirim status PLN + raw RMS ke /energy/z_mpt
   // Pakai plnPrevState (sudah di-debounce) — bukan nilai instan, supaya
@@ -969,17 +1000,23 @@ void sendToFirebase() {
   zMptJson.set("voltage_raw", acVoltage);        // RMS ADC mentah (0-4095)
   zMptJson.set("voltage_real", acVoltageReal);   // volt terkalibrasi (RMS * K)
   zMptJson.set("timestamp", (double)ts);
-  Firebase.RTDB.setJSON(&fbdo, "/energy/z_mpt", &zMptJson);
+  fbTimed("setJSON /energy/z_mpt", [&]() {
+    return Firebase.RTDB.setJSON(&fbdo, "/energy/z_mpt", &zMptJson);
+  });
 
   // Kirim status PLN terpisah (untuk notifikasi & status di app)
   FirebaseJson plnJson;
   plnJson.set("available", plnPrevState);
   plnJson.set("source", plnPrevState ? "PLN" : "UPS");
   plnJson.set("timestamp", (double)ts);
-  Firebase.RTDB.setJSON(&fbdo, "/energy/pln_status", &plnJson);
+  fbTimed("setJSON /energy/pln_status", [&]() {
+    return Firebase.RTDB.setJSON(&fbdo, "/energy/pln_status", &plnJson);
+  });
 
   // Heartbeat: device online status (updated tiap 1s bersama energy data)
-  Firebase.RTDB.setInt(&fbdo, "/device/heartbeat", (int)ts);
+  fbTimed("setInt /device/heartbeat", [&]() {
+    return Firebase.RTDB.setInt(&fbdo, "/device/heartbeat", (int)ts);
+  });
 
   // Ping status: konektivitas internet device (untuk ditampilkan di app)
   FirebaseJson pingJson;
@@ -990,7 +1027,9 @@ void sendToFirebase() {
   pingJson.set("ip", WiFi.localIP().toString());
   pingJson.set("mac", WiFi.macAddress());
   pingJson.set("timestamp", (double)ts);
-  Firebase.RTDB.setJSON(&fbdo, "/device/ping", &pingJson);
+  fbTimed("setJSON /device/ping", [&]() {
+    return Firebase.RTDB.setJSON(&fbdo, "/device/ping", &pingJson);
+  });
 
   // ── Diagnosa decision tree → /lamp/diag/{a,b} ─────────────────────────────
   // Firmware adalah SATU-SATUNYA pengevaluasi decision tree (sejak 2026-09-29).
@@ -1002,7 +1041,9 @@ void sendToFirebase() {
   diagJsonA.set("isAlert", diagA.isAlert);
   diagJsonA.set("settling", diagA.settling);
   diagJsonA.set("timestamp", (double)ts);
-  Firebase.RTDB.setJSON(&fbdo, "/lamp/diag/a", &diagJsonA);
+  fbTimed("setJSON /lamp/diag/a", [&]() {
+    return Firebase.RTDB.setJSON(&fbdo, "/lamp/diag/a", &diagJsonA);
+  });
 
   FirebaseJson diagJsonB;
   diagJsonB.set("status", lampStatusName(diagB.status));
@@ -1010,7 +1051,9 @@ void sendToFirebase() {
   diagJsonB.set("isAlert", diagB.isAlert);
   diagJsonB.set("settling", diagB.settling);
   diagJsonB.set("timestamp", (double)ts);
-  Firebase.RTDB.setJSON(&fbdo, "/lamp/diag/b", &diagJsonB);
+  fbTimed("setJSON /lamp/diag/b", [&]() {
+    return Firebase.RTDB.setJSON(&fbdo, "/lamp/diag/b", &diagJsonB);
+  });
 
   // Note: /lamp/status/{a,b} ditulis oleh aplikasi (updateLampControl)
   // Firmware hanya baca /lamp/control/{a,b} untuk eksekusi perintah
@@ -1023,7 +1066,9 @@ void checkWifiResetCommand() {
   if (!wifiConnected || !firebaseReady) return;
 
   // Baca /system/reset_wifi (boolean)
-  if (Firebase.RTDB.getBool(&fbdo, "/system/reset_wifi")) {
+  if (fbTimed("getBool /system/reset_wifi", [&]() {
+    return Firebase.RTDB.getBool(&fbdo, "/system/reset_wifi");
+  })) {
     if (fbdo.boolData() == true) {
       Serial.println("[RESET] Menerima perintah Reset WiFi!");
 
