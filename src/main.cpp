@@ -214,6 +214,7 @@ void printEnergyData(const EnergyData& d, const char* label);
 void buzzerOn(unsigned long durationMs);
 void readZMPT();
 void syncRTC();
+bool rtcTimeValid();
 void checkWifiResetCommand();
 void pingGoogle();
 void readConfigOnce(const char* path, LampConfig& cfg);
@@ -260,12 +261,22 @@ void setup() {
   }
 
   // RTC init
+  // PENTING: kalau RTC ada tapi waktu isinya rusak (baterai habis / baru),
+  // register bisa berisi nilai acak — dulu OLED menampilkan "jam 45".
+  // Jadi: (a) set waktu compile HANYA kalau RTC tidak ada / waktu tidak valid,
+  //       (b) kalau RTC punya waktu valid, JANGAN ditimpa (biar RTC yang jalan).
   if (!rtc.begin()) {
     Serial.println("[RTC] Not found");
-    // set to compile time if RTC missing
-    rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
   } else {
     Serial.println("[RTC] Initialized");
+    if (!rtcTimeValid()) {
+      Serial.println("[RTC] Waktu tidak valid — set dari compile time");
+      rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
+    } else {
+      DateTime t = rtc.now();
+      Serial.printf("[RTC] Waktu OK: %04d-%02d-%02d %02d:%02d:%02d\n",
+                    t.year(), t.month(), t.day(), t.hour(), t.minute(), t.second());
+    }
   }
 
 // Log alasan reset setiap kali boot — dibutuhkan untuk membedakan crash vs loop stall
@@ -865,9 +876,15 @@ void updateOLED() {
 
   // ── Baris 1: Waktu (RTC) — rata tengah ─────────────────────────────────────
   // 8 char × 6px = 48px → x = (128 - 48) / 2 = 40
+  // Guard: register RTC yang rusak bisa hasilkan jam > 23 ("jam 45") —
+  // kalau tidak valid, tampilkan --:--:-- alih-alih angka sampah.
   DateTime now = rtc.now();
   display.setCursor(40, 0);
-  display.printf("%02d:%02d:%02d", now.hour(), now.minute(), now.second());
+  if (rtcTimeValid()) {
+    display.printf("%02d:%02d:%02d", now.hour(), now.minute(), now.second());
+  } else {
+    display.print("--:--:--");
+  }
 
   // ── Baris 2: Status WiFi + latency ping (8.8.8.8) ──────────────────────────
   display.setCursor(0, 8);
@@ -1171,11 +1188,30 @@ void printResetReason() {
   Serial.printf("Reset Reason: %d\n", reason);
 }
 
+// Cek apakah waktu RTC masuk akal.
+// Register DS3231 yang rusak bisa menghasilkan jam > 23 (mis. tampil "jam 45").
+bool rtcTimeValid() {
+  DateTime t = rtc.now();
+  if (t.year() < 2020 || t.year() > 2099) return false;
+  if (t.month() < 1 || t.month() > 12)   return false;
+  if (t.day() < 1 || t.day() > 31)       return false;
+  if (t.hour() > 23 || t.minute() > 59 || t.second() > 59) return false;
+  return true;
+}
+
 // Sync RTC dari NTP (panggil sekali setelah WiFi connected)
+// Coba beberapa kali — NTP bisa gagal sesaat di jaringan 4G.
 void syncRTC() {
   configTime(7 * 3600, 0, "pool.ntp.org", "time.nist.gov");
-  delay(2000);  // tunggu NTP sync
-  time_t t = time(nullptr);
+
+  time_t t = 0;
+  for (int attempt = 1; attempt <= 3; attempt++) {
+    delay(2000);  // tunggu NTP sync
+    t = time(nullptr);
+    if (t > 1000000000) break;
+    Serial.printf("[RTC] NTP belum siap (percobaan %d/3)\n", attempt);
+  }
+
   if (t > 1000000000) {
     struct tm* tm = localtime(&t);
     rtc.adjust(DateTime(
@@ -1186,7 +1222,7 @@ void syncRTC() {
       tm->tm_year + 1900, tm->tm_mon + 1, tm->tm_mday,
       tm->tm_hour, tm->tm_min, tm->tm_sec);
   } else {
-    Serial.println("[RTC] NTP sync failed");
+    Serial.println("[RTC] NTP sync failed — pakai waktu RTC yang ada");
   }
 }
 
