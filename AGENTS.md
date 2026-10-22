@@ -15,9 +15,9 @@
 ## Commands
 ```bash
 # Firmware (dari root repo ini)
-pio run                      # Build
-pio run -t upload            # Build + upload
-pio device monitor           # Serial monitor
+pio run -e esp32dev          # Build production
+pio run -t upload -e esp32dev # Build + upload production
+pio device monitor -e esp32dev # Serial monitor
 pio lib install "<nama>"     # Tambah library
 
 # Mobile (jika terminal di smartnaga_app, jalankan langsung)
@@ -39,7 +39,7 @@ git add . && git commit -m "feat: <brief>" && git push
 - Prioritas: perangkat yang benar-benar jalan (equipment that works)
 
 ## Wiring
-Lihat `WIRING.md` dan `docs/arsitektur-sistem.md`. Pin aktual ada di
+Lihat `WIRING.md` dan `docs/2026-08-19-arsitektur-sistem.md`. Pin aktual ada di
 `src/main.cpp` bagian `Pin Definition`.
 
 ## Note
