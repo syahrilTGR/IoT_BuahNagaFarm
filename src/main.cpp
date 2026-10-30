@@ -3,6 +3,7 @@
 #include <WiFi.h>
 #include <WiFiManager.h>  // ESP32 WiFi Manager
 #include <Firebase_ESP_Client.h>
+#include <ArduinoOTA.h>
 #include "config.h"
 #include <Wire.h>
 #include <Adafruit_GFX.h>
@@ -223,6 +224,33 @@ LampStatusFw evaluateLampStatusFw(bool relayOn, float voltage, float current, fl
 const char* lampStatusName(LampStatusFw s);
 const char* lampStatusShortLabel(LampStatusFw s);
 
+// ── ArduinoOTA ───────────────────────────────────────────────────────────────
+void initOTA() {
+  static bool otaStarted = false;
+  if (otaStarted) return;
+  ArduinoOTA.setHostname("smartnaga-esp32");
+  ArduinoOTA.onStart([]() {
+    Serial.println("\n[OTA] Start updating firmware via WiFi...");
+  });
+  ArduinoOTA.onEnd([]() {
+    Serial.println("\n[OTA] Update selesai! Rebooting...");
+  });
+  ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
+    Serial.printf("[OTA] Progress: %u%%\r", (progress / (total / 100)));
+  });
+  ArduinoOTA.onError([](ota_error_t error) {
+    Serial.printf("[OTA] Error[%u]: ", error);
+    if (error == OTA_AUTH_ERROR) Serial.println("Auth Failed");
+    else if (error == OTA_BEGIN_ERROR) Serial.println("Begin Failed");
+    else if (error == OTA_CONNECT_ERROR) Serial.println("Connect Failed");
+    else if (error == OTA_RECEIVE_ERROR) Serial.println("Receive Failed");
+    else if (error == OTA_END_ERROR) Serial.println("End Failed");
+  });
+  ArduinoOTA.begin();
+  otaStarted = true;
+  Serial.printf("[OTA] Service siap! IP: %s | Hostname: smartnaga-esp32\n", WiFi.localIP().toString().c_str());
+}
+
 void setup() {
   Serial.begin(115200);
   delay(100);
@@ -424,6 +452,12 @@ void loop() {
     digitalWrite(BUZZER_PIN, LOW);
     buzzerActive = false;
     buzzerOffTime = millis();
+  }
+
+  // 0b. ArduinoOTA handler
+  if (wifiConnected) {
+    initOTA();
+    ArduinoOTA.handle();
   }
 
   // 1. Baca PZEM tiap 5 detik — skip saat PLN mati (PZEM AC-powered, read akan block ~7s)
