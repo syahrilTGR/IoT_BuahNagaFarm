@@ -18,8 +18,8 @@ RTC_DS3231 rtc;
 #include "ping/ping_sock.h"
 
 // ── Pin Definition ───────────────────────────────────────────────────────────
-static const uint8_t SSR_PIN = 14;          // GPIO14 → SSR (Blok A)
-static const uint8_t SSR_PIN_B = 13;        // GPIO13 → SSR (Blok B)
+static const uint8_t RELAY_PIN_A = 13;       // GPIO13 → Relay (Blok A, trigger kontaktor A)
+static const uint8_t RELAY_PIN_B = 14;       // GPIO14 → Relay (Blok B, trigger kontaktor B)
 static const uint8_t PZEM_RX = 33;          // ESP32 RX2 ← PZEM A TX
 static const uint8_t PZEM_TX = 32;          // ESP32 TX2 → PZEM A RX
 static const uint8_t PZEMB_RX = 26;         // Serial1 RX ← PZEM B TX
@@ -187,8 +187,8 @@ WiFiManager wm;
 
 // ── Forward Declarations ─────────────────────────────────────────────────────
 void readPZEM();
-void controlSSR();
-void controlSSRB();
+void controlRelayA();
+void controlRelayB();
 void setLampA(bool state);
 void setLampB(bool state);
 void updateOLED();
@@ -228,13 +228,13 @@ void setup() {
   delay(100);
   Serial.println("\n=== SmartNaga ESP32 Boot ===");
 
-  // SSR pin — active LOW: LOW = ON, HIGH = OFF
+  // Relay pin (trigger kontaktor) — active LOW: LOW = ON, HIGH = OFF
   // Set HIGH dulu (selagi INPUT) agar saat pinMode(OUTPUT) pin TIDAK glitch LOW
-  digitalWrite(SSR_PIN, HIGH);   // HIGH = OFF (active LOW)
-  pinMode(SSR_PIN, OUTPUT);
+  digitalWrite(RELAY_PIN_A, HIGH);   // HIGH = OFF (active LOW)
+  pinMode(RELAY_PIN_A, OUTPUT);
 
-  digitalWrite(SSR_PIN_B, HIGH);
-  pinMode(SSR_PIN_B, OUTPUT);
+  digitalWrite(RELAY_PIN_B, HIGH);
+  pinMode(RELAY_PIN_B, OUTPUT);
 
   // Tombol toggle lampu (INPUT_PULLUP, tombol ke GND)
   // LED builtin sebagai indikator (active LOW)
@@ -287,8 +287,8 @@ void setup() {
 // Default lampu OFF saat boot (sebelum sync Firebase)
   lampAState = false;
   lampBState = false;
-  controlSSR();
-  controlSSRB();
+  controlRelayA();
+  controlRelayB();
 
   // WiFi & Firebase: non-blocking (dilakukan di loop())
   wifiConnected = false;
@@ -432,8 +432,9 @@ void loop() {
     readPZEM();
   }
 
-  // 2. Kontrol SSR (real-time)
-  controlSSR();
+  // 2. Kontrol Relay (real-time)
+  controlRelayA();
+  controlRelayB();
 
   // 3. Cek perintah dari Firebase tiap 100ms
   if (now - timerCheckCmd.prev >= timerCheckCmd.interval) {
@@ -559,31 +560,31 @@ void printEnergyData(const EnergyData& d, const char* label) {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-// SSR Control
+// Relay Control (Trigger Kontaktor Blok A & B)
 // ════════════════════════════════════════════════════════════════════════════
-void controlSSR() {
-  // Active LOW: LOW = ON, HIGH = OFF (SSR direct dari ESP32 tanpa LLC)
-  digitalWrite(SSR_PIN, !lampAState);
+void controlRelayA() {
+  // Active LOW: LOW = ON, HIGH = OFF
+  digitalWrite(RELAY_PIN_A, !lampAState);
 }
 
-void controlSSRB() {
-  digitalWrite(SSR_PIN_B, !lampBState);
+void controlRelayB() {
+  digitalWrite(RELAY_PIN_B, !lampBState);
 }
 
 void setLampA(bool state) {
   lampAState = state;
-  controlSSR();
+  controlRelayA();
   buzzerOn(200);
   lampToggleMsA = millis();  // catat waktu toggle untuk settling 4 detik
-  Serial.printf("[SSR] Lampu Blok A: %s\n", state ? "ON" : "OFF");
+  Serial.printf("[RELAY] Lampu Blok A: %s\n", state ? "ON" : "OFF");
 }
 
 void setLampB(bool state) {
   lampBState = state;
-  controlSSRB();
+  controlRelayB();
   buzzerOn(200);
   lampToggleMsB = millis();  // catat waktu toggle untuk settling 4 detik
-  Serial.printf("[SSR] Lampu Blok B: %s\n", state ? "ON" : "OFF");
+  Serial.printf("[RELAY] Lampu Blok B: %s\n", state ? "ON" : "OFF");
 }
 
 // ════════════════════════════════════════════════════════════════════════════
