@@ -1,0 +1,26 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // latency_test_logs: riwayat pengujian delay kontrol & monitoring
+    match /latency_test_logs/{logId} {
+      allow read, write: if request.auth != null;
+    }
+
+    // energy_sessions: read/write for authenticated users
+    match /energy_sessions/{sessionId} {
+      allow read, write: if request.auth != null;
+    }
+
+    // data_test (existing)
+    match /data_test/{docId} {
+      allow read, write: if true;
+    }
+
+    // dragon_fruit_monitoring (existing)
+    match /dragon_fruit_monitoring/{docId} {
+      allow read, write: if true;
+    }
+  }
+}
+
