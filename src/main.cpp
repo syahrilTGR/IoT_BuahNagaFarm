@@ -195,6 +195,7 @@ void setLampB(bool state);
 void updateOLED();
 void checkFirebaseCommands();
 void sendToFirebase();
+uint64_t getEpochMs();
 unsigned long getEpochSec();
 void printResetReason();
 
@@ -336,6 +337,8 @@ void loop() {
       case SYS_WIFI_INIT:
         wm.setConfigPortalTimeout(180);
         wm.setConnectTimeout(30);
+        WiFi.setAutoReconnect(true);
+        WiFi.persistent(true);
         sysState = SYS_WIFI_CONNECTING;
         stateStart = now;
         break;
@@ -352,6 +355,7 @@ void loop() {
           wifiConnected = true;
           Serial.print("[WiFi] Connected! IP: ");
           Serial.println(WiFi.localIP());
+          pingGoogle();  // Segera ping 8.8.8.8 untuk cek internet secara non-blocking
           sysState = SYS_FIREBASE_INIT;
         } else if (now - stateStart >= 30000) {
           // Fallback ke Config Portal AP
@@ -385,6 +389,7 @@ void loop() {
             inConfigPortal = false;
             Serial.print("[WiFi] Connected via Portal! IP: ");
             Serial.println(WiFi.localIP());
+            pingGoogle();
             sysState = SYS_FIREBASE_INIT;
           } else {
             Serial.println("[WiFi] Config Portal failed, restart...");
@@ -404,21 +409,32 @@ void loop() {
         Firebase.reconnectWiFi(true);
         Firebase.RTDB.setReadTimeout(&fbdo, 5000);   // max 5s per RTDB call (default -1 = 30s)
         configTime(7 * 3600, 0, "pool.ntp.org", "time.nist.gov");
-        sysState = SYS_FIREBASE_CHECK;
-        stateStart = now;
+        // Langsung siap tanpa menunggu Firebase/internet agar alat tidak stuck
+        sysState = SYS_READY;
+        firebaseInitialized = true;
+        Serial.println("[System] Ready! Loop sensor & OLED aktif.");
         break;
 
       case SYS_FIREBASE_CHECK:
-        if (WiFi.status() == WL_CONNECTED && Firebase.ready()) {
-          firebaseReady = true;
-          Serial.println("[Firebase] Connected & Authenticated");
+      default:
+        sysState = SYS_READY;
+        firebaseInitialized = true;
+        break;
+    }
+  }
 
-          // ── Sync state lampu dari Firebase (JANGAN tulis ke /lamp/control) ──
-          // /lamp/control/{a,b} adalah MILIK APP (user yang set dari app).
-          // Firmware hanya BOLEH BACA — kalau firmware menulis false di sini,
-          // ia menimpa state terakhir yang di-set user SEBELUM membacanya,
-          // sehingga lampu selalu ikut mati saat boot.
-          // Default OFF hanya dipakai kalau pembacaan GAGAL (fallback aman).
+  // Non-blocking Firebase Connection & Sync:
+  // Hanya panggil Firebase.ready() jika WiFi terhubung DAN ada akses internet (lastPingOk).
+  // Mencegah loop stall / freeze akibat DNS/TLS timeout saat WiFi lokal tanpa internet.
+  if (wifiConnected && lastPingOk) {
+    if (!firebaseReady) {
+      if (Firebase.ready()) {
+        firebaseReady = true;
+        Serial.println("[Firebase] Connected & Authenticated");
+
+        // Sync state lampu dari Firebase (hanya sekali saat pertama kali konek)
+        static bool initialSyncDone = false;
+        if (!initialSyncDone) {
           bool stateA = false, stateB = false;
           if (Firebase.RTDB.getBool(&fbdo, "/lamp/control/a")) stateA = fbdo.boolData();
           if (Firebase.RTDB.getBool(&fbdo, "/lamp/control/b")) stateB = fbdo.boolData();
@@ -426,24 +442,14 @@ void loop() {
                         stateA ? "ON" : "OFF", stateB ? "ON" : "OFF");
           setLampA(stateA);
           setLampB(stateB);
-
-          sysState = SYS_READY;
-          firebaseInitialized = true;
-          Serial.println("[System] Ready!");
-
-          syncRTC();  // Sync RTC time from NTP
-        } else if (now - stateStart >= 20000) {
-          Serial.println("[Firebase] Timeout, retry later...");
-          sysState = SYS_READY;
-          firebaseInitialized = true;
+          initialSyncDone = true;
         }
-        break;
 
-      default:
-        sysState = SYS_READY;
-        firebaseInitialized = true;
-        break;
+        syncRTC();  // Sync RTC time from NTP
+      }
     }
+  } else {
+    firebaseReady = false;
   }
 
   // 0. Buzzer OFF check — PALING PERTAMA, sebelum semua blocking call
@@ -510,7 +516,7 @@ void loop() {
   //    One-shot saat Firebase pertama siap (jangan tunggu 5 menit), lalu periodik.
   //    timerConfig.prev di-set SEBELUM read supaya read yang lambat tidak
   //    memicu ulang di iterasi berikutnya.
-  if (firebaseReady) {
+  if (firebaseReady && lastPingOk) {
     static bool configBootRead = false;
     if (!configBootRead) {
       configBootRead = true;
@@ -527,9 +533,12 @@ void loop() {
   // Watchdog / keep WiFi alive
   if (WiFi.status() != WL_CONNECTED) {
     wifiConnected = false;
+    lastPingOk = false;
+    firebaseReady = false;
   } else if (!wifiConnected) {
     wifiConnected = true;
     Serial.println("WiFi Reconnected");
+    pingGoogle();
   }
 }
 
@@ -658,7 +667,7 @@ static const unsigned long SENSOR_GRACE_MS = 10000;
 
 // ── Config dari Firebase ────────────────────────────────────────────────────
 void readConfigOnce(const char* path, LampConfig& cfg) {
-  if (!wifiConnected || !firebaseReady) return;
+  if (!wifiConnected || !firebaseReady || !lastPingOk) return;
 
   FirebaseJson fbjson;
   if (fbTimed("getJSON config", [&]() {
@@ -927,6 +936,8 @@ void updateOLED() {
     display.print("Wifi: PORTAL");
   } else if (wifiConnected && lastPingOk) {
     display.printf("Wifi: online %lums", lastPingMs);
+  } else if (wifiConnected && !lastPingOk) {
+    display.print("Wifi: No Internet");
   } else {
     display.print("Wifi: offline");
   }
@@ -967,7 +978,7 @@ void updateOLED() {
 // Firebase Integration
 // ════════════════════════════════════════════════════════════════════════════
 void checkFirebaseCommands() {
-  if (!wifiConnected || !firebaseReady) return;
+  if (!wifiConnected || !firebaseReady || !lastPingOk) return;
 
   unsigned long now = millis();
 
@@ -980,7 +991,18 @@ void checkFirebaseCommands() {
     if (cmd != lampAState && (now - lastCmdExecTimeA >= CMD_DEBOUNCE_MS)) {
       setLampA(cmd);
       lastCmdExecTimeA = now;
-      Serial.println("[Firebase] Command executed Blok A.");
+      uint64_t tExec = getEpochMs();
+      Serial.printf("[TEST-CONTROL] Blok A -> %s | t_esp_exec: %llu ms\n",
+                    cmd ? "ON" : "OFF", (unsigned long long)tExec);
+
+      // Tulis status dan t_esp_exec ke /lamp/status/a (kompatibel rule RTDB hasChildren(['state', 'timestamp']))
+      FirebaseJson statusJsonA;
+      statusJsonA.set("state", cmd);
+      statusJsonA.set("timestamp", (double)tExec);
+      statusJsonA.set("t_esp_exec", (double)tExec);
+      fbTimed("setJSON /lamp/status/a", [&]() {
+        return Firebase.RTDB.setJSON(&fbdo, "/lamp/status/a", &statusJsonA);
+      });
     }
   }
 
@@ -993,7 +1015,18 @@ void checkFirebaseCommands() {
     if (cmd != lampBState && (now - lastCmdExecTimeB >= CMD_DEBOUNCE_MS)) {
       setLampB(cmd);
       lastCmdExecTimeB = now;
-      Serial.println("[Firebase] Command executed Blok B.");
+      uint64_t tExec = getEpochMs();
+      Serial.printf("[TEST-CONTROL] Blok B -> %s | t_esp_exec: %llu ms\n",
+                    cmd ? "ON" : "OFF", (unsigned long long)tExec);
+
+      // Tulis status dan t_esp_exec ke /lamp/status/b (kompatibel rule RTDB hasChildren(['state', 'timestamp']))
+      FirebaseJson statusJsonB;
+      statusJsonB.set("state", cmd);
+      statusJsonB.set("timestamp", (double)tExec);
+      statusJsonB.set("t_esp_exec", (double)tExec);
+      fbTimed("setJSON /lamp/status/b", [&]() {
+        return Firebase.RTDB.setJSON(&fbdo, "/lamp/status/b", &statusJsonB);
+      });
     }
   } else {
     // Debug: tampilkan error jika path belum ada
@@ -1006,9 +1039,10 @@ void checkFirebaseCommands() {
 }
 
 void sendToFirebase() {
-  if (!wifiConnected || !firebaseReady) return;
+  if (!wifiConnected || !firebaseReady || !lastPingOk) return;
 
-  unsigned long ts = getEpochSec();
+  uint64_t tsMs = getEpochMs();
+  unsigned long ts = (unsigned long)(tsMs / 1000ULL);
 
   // ── Status validitas data PZEM ─────────────────────────────────────────────
   // PENTING: JANGAN kirim blockA.valid apa adanya.
@@ -1027,7 +1061,7 @@ void sendToFirebase() {
   energyJson.set("power", blockA.power);
   energyJson.set("energy", blockA.energy);
   energyJson.set("valid", validA);
-  energyJson.set("timestamp", (double)ts);
+  energyJson.set("timestamp", (double)tsMs);
   fbTimed("setJSON /energy/block_a", [&]() {
     return Firebase.RTDB.setJSON(&fbdo, "/energy/block_a", &energyJson);
   });
@@ -1039,7 +1073,7 @@ void sendToFirebase() {
   energyJsonB.set("power", blockB.power);
   energyJsonB.set("energy", blockB.energy);
   energyJsonB.set("valid", validB);
-  energyJsonB.set("timestamp", (double)ts);
+  energyJsonB.set("timestamp", (double)tsMs);
   fbTimed("setJSON /energy/block_b", [&]() {
     return Firebase.RTDB.setJSON(&fbdo, "/energy/block_b", &energyJsonB);
   });
@@ -1107,15 +1141,16 @@ void sendToFirebase() {
     return Firebase.RTDB.setJSON(&fbdo, "/lamp/diag/b", &diagJsonB);
   });
 
-  // Note: /lamp/status/{a,b} ditulis oleh aplikasi (updateLampControl)
-  // Firmware hanya baca /lamp/control/{a,b} untuk eksekusi perintah
+  Serial.printf("[TEST-ENERGY] Telemetry Blok A & B sent | t_esp_send: %llu ms\n", (unsigned long long)tsMs);
+
+  // Note: /lamp/status/{a,b} ditulis oleh firmware saat eksekusi perintah (checkFirebaseCommands)
 }
 
 // ════════════════════════════════════════════════════════════════════════════
 // WiFi Reset Command from Mobile App (via Firebase)
 // ════════════════════════════════════════════════════════════════════════════
 void checkWifiResetCommand() {
-  if (!wifiConnected || !firebaseReady) return;
+  if (!wifiConnected || !firebaseReady || !lastPingOk) return;
 
   // Baca /system/reset_wifi (boolean)
   if (fbTimed("getBool /system/reset_wifi", [&]() {
@@ -1209,13 +1244,17 @@ void pingGoogle() {
 // ════════════════════════════════════════════════════════════════════════════
 // Utility
 // ════════════════════════════════════════════════════════════════════════════
-// ════════════════════════════════════════════════════════════════════════════
-// Utility
-// ════════════════════════════════════════════════════════════════════════════
+uint64_t getEpochMs() {
+  struct timeval tv;
+  gettimeofday(&tv, NULL);
+  if (tv.tv_sec > 1000000000) {
+    return ((uint64_t)tv.tv_sec * 1000ULL) + (tv.tv_usec / 1000ULL);
+  }
+  return (uint64_t)millis();
+}
+
 unsigned long getEpochSec() {
-  time_t t = time(nullptr);
-  if (t > 1000000000) return (unsigned long)t;
-  return millis() / 1000;
+  return (unsigned long)(getEpochMs() / 1000ULL);
 }
 
 void printResetReason() {
@@ -1234,19 +1273,11 @@ bool rtcTimeValid() {
   return true;
 }
 
-// Sync RTC dari NTP (panggil sekali setelah WiFi connected)
-// Coba beberapa kali — NTP bisa gagal sesaat di jaringan 4G.
+// Sync RTC dari NTP (non-blocking)
 void syncRTC() {
-  configTime(7 * 3600, 0, "pool.ntp.org", "time.nist.gov");
+  if (!lastPingOk) return;  // Lewati jika belum ada internet
 
-  time_t t = 0;
-  for (int attempt = 1; attempt <= 3; attempt++) {
-    delay(2000);  // tunggu NTP sync
-    t = time(nullptr);
-    if (t > 1000000000) break;
-    Serial.printf("[RTC] NTP belum siap (percobaan %d/3)\n", attempt);
-  }
-
+  time_t t = time(nullptr);
   if (t > 1000000000) {
     struct tm* tm = localtime(&t);
     rtc.adjust(DateTime(
@@ -1257,7 +1288,7 @@ void syncRTC() {
       tm->tm_year + 1900, tm->tm_mon + 1, tm->tm_mday,
       tm->tm_hour, tm->tm_min, tm->tm_sec);
   } else {
-    Serial.println("[RTC] NTP sync failed — pakai waktu RTC yang ada");
+    Serial.println("[RTC] NTP sync pending — pakai waktu RTC yang ada");
   }
 }
 
