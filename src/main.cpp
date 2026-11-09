@@ -367,7 +367,7 @@ void loop() {
 
       case SYS_WIFI_PORTAL:
         Serial.println("[WiFi] Starting Config Portal (AP mode)...");
-        Serial.println("[WiFi] SSID: SmartNaga-AP  |  Pass: smartnaga123  |  IP: 192.168.4.1");
+        Serial.println("[WiFi] SSID: Energa-AP  |  Pass: (Open)  |  IP: 192.168.4.1");
         inConfigPortal = true;
         {
           // Tampilkan indikator di OLED sebelum portal (blocking)
@@ -378,12 +378,12 @@ void loop() {
           display.println("== SETUP WIFI ==");
           display.println("");
           display.println("1. Konek ke WiFi:");
-          display.println("   SmartNaga-AP");
-          display.println("2. Pass: smartnaga123");
-          display.println("3. Buka 192.168.4.1");
+          display.println("   Energa-AP (Open)");
+          display.println("2. Buka Browser:");
+          display.println("   192.168.4.1");
           display.display();
 
-          bool res = wm.startConfigPortal("SmartNaga-AP", "smartnaga123");
+          bool res = wm.startConfigPortal("Energa-AP");
           if (res) {
             wifiConnected = true;
             inConfigPortal = false;
@@ -1166,7 +1166,7 @@ void checkWifiResetCommand() {
       Serial.println("[RESET] Resetting WiFi settings...");
       wm.resetSettings();
 
-      // 3. Restart ESP32 → masuk mode AP (SmartNaga-AP)
+      // 3. Restart ESP32 → masuk mode AP (Energa-AP)
       Serial.println("[RESET] Restarting ESP32...");
       ESP.restart();
     }
